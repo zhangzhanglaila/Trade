@@ -70,6 +70,11 @@ logs/
 # AJ-Report 运行时磁盘缓存（EhCache，应用启动时自动生成，含 .lock/.data）
 /src/dashboard-ajreport/bin/cache/
 
+# 运行期目录（start-all.sh / start-all.bat 自动创建）
+#   runtime/ontology-graph-store —— 嵌入式 Jena TDB 图库，导入 940 MB RDF 后约 1.8 GB
+#   属「能重新生成」的产物（重跑图谱导入即可恢复），绝不可入库
+/runtime/
+
 # -----------------------------------------------------------------------------
 # 6. 大模型（18.5 GB）—— 不入库
 #    两个模型均有独立远端仓库，按需单独拉取：
