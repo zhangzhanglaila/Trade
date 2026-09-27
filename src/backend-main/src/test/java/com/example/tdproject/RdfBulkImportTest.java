@@ -93,6 +93,12 @@ public class RdfBulkImportTest {
             return;
         }
 
+        // 首次部署时 runtime/ontology-graph-store 尚不存在，而
+        // TDBFactory.createDataset 对不存在的路径会走"连接已有库"分支，
+        // 直接抛 "Does not exist: ..."，导致文档 §4.3 的导入命令在全新机器上
+        // 必然失败。先建出空目录，让它走创建分支。
+        new File(TDB_PATH).mkdirs();
+
         Dataset dataset = TDBFactory.createDataset(TDB_PATH);
         try {
             // 可选：清空
