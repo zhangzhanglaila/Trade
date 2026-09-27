@@ -13,10 +13,15 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 批量把磁盘上的 RDF 数据装入 Jena TDB 图库。
@@ -125,9 +130,9 @@ public class RdfBulkImportTest {
                 Model target = dataset.getDefaultModel();
                 for (File f : files) {
                     Model tmp = ModelFactory.createDefaultModel();
-                    try (InputStreamReader reader = new InputStreamReader(
-                            new FileInputStream(f), StandardCharsets.UTF_8)) {
-                        tmp.read(reader, null, detectLang(f));
+                    String lang = detectLang(f);
+                    try (Reader reader = openReader(f, lang)) {
+                        tmp.read(reader, null, lang);
                         target.add(tmp);
                         pending += tmp.size();
                     } catch (Exception e) {
@@ -195,6 +200,99 @@ public class RdfBulkImportTest {
             return "N-TRIPLE";
         }
         return "RDF/XML";
+    }
+
+    // ==================================================================
+    // URI 清洗：把 RDF/XML 属性里的非法 IRI 修成合法形式
+    //
+    // 【为什么需要】这批 mapped_data.rdf 的 rdf:about 直接拿商品名称拼 URI，
+    // 商品名里的各种写法让 URI 违反 RFC 3986/3987。Jena 会报 {W002} 并
+    // ——关键——立刻中止整个文件的解析（不是跳过该条）。实测最严重的一个文件
+    // 有 1183 个 rdf:Description，首个坏 IRI 出现在第 807 行，结果只导入 431 条
+    // 就停了。
+    //
+    // 【四类问题及分布（275 个文件全量统计）】
+    //   1. 裸 %（"弹性线≥5%" 这类商品名）      8,930 处 / 254 个文件
+    //   2. 字符引用形式的控制字符 &#10; &#13;      293 处 / 123 个文件
+    //   3. 裸空格（"西鲱, 整条"）                   若干
+    //   4. 路径里的方括号 []（RFC 3986 只允许出现在 host）
+    //
+    // 【为什么可以一律转义】已核对：这些 % 没有一个是合法的 %XX，不存在二次
+    // 转义；空格与方括号在 URI 路径中本就非法。清洗只作用于解析这一侧，
+    // data/ 下的原文件保持不动。
+    // ==================================================================
+
+    /** RDF/XML 中承载 URI 的属性（实测仅 rdf:about 命中，另两个一并覆盖） */
+    private static final Pattern URI_ATTR =
+            Pattern.compile("(rdf:(?:about|resource|datatype))=\"([^\"]*)\"");
+
+    /** 数字字符引用，如 &#10; / &#x0D; */
+    private static final Pattern CHARREF = Pattern.compile("&#([xX]?)([0-9A-Fa-f]+);");
+
+    /** URI 里必须百分号编码的字符（空格与控制字符另行按码点处理） */
+    private static final String URI_ILLEGAL = "<>\"{}|\\^`[]";
+
+    private static boolean isHex(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+
+    /** 把单个 URI 属性值修成合法 IRI。 */
+    private static String escapeUri(String uri) {
+        String u = uri;
+        // 1) 字符引用形式的控制字符 -> 百分号编码
+        if (u.indexOf("&#") >= 0) {
+            Matcher cm = CHARREF.matcher(u);
+            StringBuilder c = new StringBuilder(u.length());
+            while (cm.find()) {
+                int code;
+                try {
+                    code = Integer.parseInt(cm.group(2), cm.group(1).isEmpty() ? 10 : 16);
+                } catch (NumberFormatException e) {
+                    code = -1;
+                }
+                if (code >= 0 && (code < 0x20 || code == 0x7f)) {
+                    cm.appendReplacement(c, Matcher.quoteReplacement(String.format("%%%02X", code)));
+                } else {
+                    cm.appendReplacement(c, Matcher.quoteReplacement(cm.group(0)));
+                }
+            }
+            cm.appendTail(c);
+            u = c.toString();
+        }
+        // 2) 逐个字符修正：裸 % -> %25；空格/控制字符/URI 禁用符 -> %XX
+        StringBuilder s = new StringBuilder(u.length() + 16);
+        for (int i = 0; i < u.length(); i++) {
+            char ch = u.charAt(i);
+            if (ch == '%') {
+                boolean legal = i + 2 < u.length()
+                        && isHex(u.charAt(i + 1)) && isHex(u.charAt(i + 2));
+                s.append(legal ? "%" : "%25");
+            } else if (ch <= 0x20 || ch == 0x7f || URI_ILLEGAL.indexOf(ch) >= 0) {
+                s.append(String.format("%%%02X", (int) ch));
+            } else {
+                s.append(ch);
+            }
+        }
+        return s.toString();
+    }
+
+    /** 打开一个 RDF 文件用于解析；RDF/XML 会先做上述 URI 清洗。 */
+    private static Reader openReader(File f, String lang) throws Exception {
+        if (!"RDF/XML".equals(lang)) {
+            return new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8);
+        }
+        String xml = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+        if (xml.indexOf('%') < 0 && xml.indexOf("&#") < 0) {
+            return new StringReader(xml);
+        }
+        Matcher m = URI_ATTR.matcher(xml);
+        StringBuilder sb = new StringBuilder(xml.length() + 512);
+        while (m.find()) {
+            m.appendReplacement(sb, Matcher.quoteReplacement(
+                    m.group(1) + "=\"" + escapeUri(m.group(2)) + "\""));
+        }
+        m.appendTail(sb);
+        return new StringReader(sb.toString());
     }
 
     private static long countTriples(Dataset dataset) {
