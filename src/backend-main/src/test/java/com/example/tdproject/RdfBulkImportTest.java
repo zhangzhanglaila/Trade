@@ -73,6 +73,30 @@ public class RdfBulkImportTest {
     /** 每积累多少个文件提交一次事务，避免单个超大事务耗尽内存 */
     private static final int COMMIT_EVERY = 15;
 
+    /**
+     * 导入目标命名图。
+     *
+     * <p>【为什么必须写命名图】应用侧从不读默认图 —— 整个 backend-main 的
+     * src/main 里 {@code getDefaultModel} 出现了 0 次。图谱可视化
+     * （{@code GET /ontology/{id}/visualization}）与结构分析
+     * （{@code /ontology/{id}/graph/structure}）都只查一个命名图：
+     *
+     * <pre>
+     *   JenaGraphRepositoryImpl.buildNamedGraphUri()
+     *       = ontology.graph.named-graph-prefix
+     *         + ontology.projectName + "/v" + ontology.versionNumber
+     * </pre>
+     *
+     * 默认值对应 sys 库里 ontology 表唯一那行（projectName=中哈贸易知识图谱本体、
+     * versionNumber=v1.0），注意拼接结果里是双 v（"…/v" + "v1.0"）。
+     * 实测：只导入默认图时，TDB 有 355 万条，而 /visualization 返回空数组。
+     *
+     * 用 -Dgraph.named= 覆盖；传空串则退回导入默认图。
+     */
+    private static final String NAMED_GRAPH =
+            System.getProperty("graph.named",
+                    "http://example.org/ontology/中哈贸易知识图谱本体/vv1.0");
+
     @Test
     public void bulkImport() {
         String dirsProp = System.getProperty("graph.dir", DEFAULT_DIRS);
@@ -106,20 +130,25 @@ public class RdfBulkImportTest {
 
         Dataset dataset = TDBFactory.createDataset(TDB_PATH);
         try {
-            // 可选：清空
+            log.info("目标命名图: {}", NAMED_GRAPH.isEmpty() ? "(默认图)" : NAMED_GRAPH);
+
+            // 可选：清空（默认图与目标命名图一起清，避免残留撑大 TDB）
             if (clear) {
-                log.info("graph.clear=true，先清空默认图…");
+                log.info("graph.clear=true，先清空默认图与目标命名图…");
                 dataset.begin(ReadWrite.WRITE);
                 try {
                     dataset.getDefaultModel().removeAll();
+                    if (!NAMED_GRAPH.isEmpty()) {
+                        dataset.getNamedModel(NAMED_GRAPH).removeAll();
+                    }
                     dataset.commit();
                 } finally {
                     dataset.end();
                 }
             }
 
-            long before = countTriples(dataset);
-            log.info("导入前默认图三元组数: {}", before);
+            long before = countTriples(dataset, NAMED_GRAPH);
+            log.info("导入前三元组数: {}", before);
 
             int done = 0;
             int failed = 0;
@@ -127,7 +156,9 @@ public class RdfBulkImportTest {
             long t0 = System.currentTimeMillis();
             dataset.begin(ReadWrite.WRITE);
             try {
-                Model target = dataset.getDefaultModel();
+                Model target = NAMED_GRAPH.isEmpty()
+                        ? dataset.getDefaultModel()
+                        : dataset.getNamedModel(NAMED_GRAPH);
                 for (File f : files) {
                     Model tmp = ModelFactory.createDefaultModel();
                     String lang = detectLang(f);
@@ -160,7 +191,7 @@ public class RdfBulkImportTest {
                 dataset.end();
             }
 
-            long after = countTriples(dataset);
+            long after = countTriples(dataset, NAMED_GRAPH);
             log.info("========================================");
             log.info("导入完成：处理 {} 个文件，失败 {} 个", done, failed);
             log.info("导入前 {} 条 -> 导入后 {} 条（净增 {}）", before, after, after - before);
@@ -259,7 +290,7 @@ public class RdfBulkImportTest {
             cm.appendTail(c);
             u = c.toString();
         }
-        // 2) 逐个字符修正：裸 % -> %25；空格/控制字符/URI 禁用符 -> %XX
+        // 2) 逐字符：裸 % -> %25；空格/控制字符/URI 禁用符 -> %XX
         StringBuilder s = new StringBuilder(u.length() + 16);
         for (int i = 0; i < u.length(); i++) {
             char ch = u.charAt(i);
@@ -295,10 +326,12 @@ public class RdfBulkImportTest {
         return new StringReader(sb.toString());
     }
 
-    private static long countTriples(Dataset dataset) {
+    private static long countTriples(Dataset dataset, String graphUri) {
         dataset.begin(ReadWrite.READ);
         try {
-            return dataset.getDefaultModel().size();
+            return (graphUri == null || graphUri.isEmpty()
+                    ? dataset.getDefaultModel()
+                    : dataset.getNamedModel(graphUri)).size();
         } finally {
             dataset.end();
         }
