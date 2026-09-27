@@ -51,16 +51,50 @@ def log(msg):
 # ----------------------------------------------------------------------
 # 工具函数
 # ----------------------------------------------------------------------
+class _NoNulFile(object):
+    """包装文本文件对象，按行剔除混入的 NUL 字节。
+
+    为什么需要：`data/01_原始_海关进出口明细` 里有 34/295 个 CSV 正文含 0x00。
+    多数只是某个字段的值恰好是一个 NUL（`"0","\x00","359,582"`）；另有两个文件
+    （哈萨克斯坦/出口/2021.7—8.csv、2021.9—10.csv，二者互为副本）中段有约
+    718 KB 的连续零填充，属文件损坏。
+    Python 的 csv 模块碰到 NUL 会直接抛 `_csv.Error: line contains NUL`，让整批
+    导入中断，所以在这里剥掉：字段值退化为空串（由 to_number() 归为 None），
+    整行皆 NUL 的会退化空行并随即被 DictReader 跳过。
+    """
+
+    def __init__(self, fh):
+        self._fh = fh
+
+    def __iter__(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._fh.__exit__(*exc)
+
+    def __next__(self):
+        line = next(self._fh)
+        return line.replace('\x00', '') if '\x00' in line else line
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+
 def open_csv(path):
-    """打开 CSV，自动探测编码与 BOM。"""
+    """打开 CSV，自动探测编码与 BOM；返回的句柄已剔除 NUL 字节。"""
     for enc in ('utf-8-sig', 'utf-8', 'gbk', 'gb18030'):
         try:
             with io.open(path, 'r', encoding=enc, newline='') as f:
                 f.read(4096)
-            return io.open(path, 'r', encoding=enc, newline='', errors='replace')
+            return _NoNulFile(io.open(path, 'r', encoding=enc, newline='',
+                                      errors='replace'))
         except (UnicodeDecodeError, LookupError):
             continue
-    return io.open(path, 'r', encoding='utf-8', errors='replace', newline='')
+    return _NoNulFile(io.open(path, 'r', encoding='utf-8', errors='replace',
+                              newline=''))
 
 
 def to_number(v):

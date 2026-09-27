@@ -300,9 +300,14 @@
                 </executions>
             </plugin>
             <!-- 测试配置：注入项目根目录，使测试类不依赖开发机的绝对路径 -->
+            <!-- 版本必须显式指定：本项目未继承 spring-boot-starter-parent，
+                 Maven 会回落到 super-POM 里的 surefire 2.12.4（2012 年版），
+                 它不识别 JUnit 5，跑 `mvn test -Dgraph.import=true` 会报
+                 "No tests were executed!"，图谱导入静默失败。 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
                 <configuration>
                     <systemPropertyVariables>
                         <!-- ${project.basedir} = <项目根>/src/backend-main，上溯两级即项目根 -->
