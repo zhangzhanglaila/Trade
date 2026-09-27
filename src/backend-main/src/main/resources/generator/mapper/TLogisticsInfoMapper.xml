@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.tdproject.generator.mapper.TLogisticsInfoMapper">
+
+    <resultMap id="BaseResultMap" type="com.example.tdproject.generator.domain.TLogisticsInfo">
+        <id property="id" column="id"/>
+        <result property="dataYearMonth" column="data_year_month"/>
+        <result property="tradePartnerCode" column="partner_code"/>
+        <result property="tradePartnerName" column="partner_name"/>
+        <result property="registeredPlaceCode" column="place_code"/>
+        <result property="registeredPlaceName" column="place_name"/>
+        <result property="commodityCode" column="commodity_code"/>
+        <result property="commodityName" column="commodity_name"/>
+        <result property="tradeMethodCode" column="method_code"/>
+        <result property="tradeMethodName" column="method_name"/>
+        <result property="firstQuantity" column="quantity"/>
+        <result property="firstUnit" column="unit"/>
+        <result property="rmbAmount" column="amount"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, data_year_month, partner_code, partner_name, place_code, place_name,
+        commodity_code, commodity_name, method_code, method_name, quantity, unit, amount
+    </sql>
+</mapper>

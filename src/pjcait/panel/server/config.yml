@@ -1,0 +1,47 @@
+Register:
+  Consul:
+    Address: 127.0.0.1:8500
+  InstanceUpdateDuration: 1s
+  ServiceName: cait-panel
+  InstanceId: cait-panel-01
+  Report:
+    Address: 127.0.0.1
+    Port: 22101
+    HealthCheckUrl: 'http://127.0.0.1:22101/health'
+
+Server:
+  Listen: 0.0.0.0
+  Port: 22101
+  Prefix: /api
+
+Kafka:
+  Brokers: ['127.0.0.1:9092']
+  Partition: 0
+  MaxBytes: 0
+  GroupId: "cait-process-worker"
+
+Elasticsearch:
+  MustAvailable: true
+  ClientConfig:
+    Addresses: ['http://localhost:9200']
+    Username:
+    Password:
+
+Neo4j:
+  Uri: neo4j://127.0.0.1:7687
+  Username: neo4j
+  # 口令不入库。真实值见项目根 config/.env 的 NEO4J_PASSWORD（config/README.md 有说明）；
+  # 本文件由 Go 程序直接解析，不展开环境变量，需要时请在本机自行填写。
+  Password: ""
+  Database: cait4
+
+Redis:
+  Addr: 127.0.0.1:6379
+  ClientName: cait-panel
+  Username: default
+  # 同上，真实值见 config/.env 的 REDIS_PASSWORD
+  Password: ""
+  Db: 0
+  MaxRetries: 4
+  MinIdleConns: 2
+  MaxIdleConns: 16

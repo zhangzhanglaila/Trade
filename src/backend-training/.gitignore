@@ -1,0 +1,51 @@
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.classpath
+.project
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files
+# 只排除体积大的训练权重（约 113 MB），训练曲线图(.png)与编码器(.pkl)保留入库。
+# 注意：必须写成绝对路径，否则 `model/` 会连带忽略 src/main/java/com/trade/model/ 下的源码。
+/python-scripts/model/**/*.pth
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Data files
+# 通用 CSV 不入库，但 data/ 下的示例输入（供训练上传接口自测）保留。
+# 注意要用 ** 匹配多级目录，示例文件在 data/出口/、data/进口/ 下。
+*.csv
+!/data/**/*.csv
+

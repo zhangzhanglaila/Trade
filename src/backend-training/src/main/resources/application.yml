@@ -1,0 +1,62 @@
+server:
+  port: 8081
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: trade-prediction-service
+
+# ============================================================
+# 运行期根目录：默认 = 启动进程的工作目录（cd 到项目根启动即自动正确）
+# 服务器上推荐显式指定：export TRADE_HOME=/opt/trade
+# ============================================================
+trade:
+  home: ${TRADE_HOME:${user.dir}}
+
+# Python 脚本配置
+python:
+  # Python 解释器：默认使用 PATH 中的 python；
+  # 如需指定绝对路径，设置环境变量 PYTHON_EXE=/usr/bin/python3
+  # 注意：该解释器需已安装 torch / pandas / flask / scikit-learn / pymysql
+  interpreter: ${PYTHON_EXE:python}
+  # 脚本基础路径（相对 ${trade.home}，即项目根）
+  script:
+    base-path: ${trade.home}/src/backend-training/python-scripts
+    quantity-train: Trade_Transformer_LSTM_quantity.py
+    price-train: Trade_Transformer_LSTM_price.py
+    api-deploy: app.py
+  
+  # CSV 数据路径配置
+  data:
+    import-data:
+      csv-path: ${trade.home}/src/backend-training/data/进口/merged_input.csv
+    export-data:
+      csv-path: ${trade.home}/src/backend-training/data/出口/merged_output.csv
+  
+  # 模型输出路径配置
+  model:
+    import-model:
+      output-path: model/trade_Transformer/in
+    export-model:
+      output-path: model/trade_Transformer/out
+  
+  # Flask 服务自动部署配置
+  flask:
+    enabled: true
+    host: 0.0.0.0
+    port: 5000
+    readiness-path: /health
+    startup-timeout-seconds: 60
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.trade: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/trade-service.log
+

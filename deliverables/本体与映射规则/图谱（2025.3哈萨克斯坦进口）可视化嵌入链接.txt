@@ -1,0 +1,3 @@
+<iframe name="nrd_studio_embed" frameborder="0" style="display:block;width:500px; height:300px;" src="https://nrdstudio.cn/view/embed/7007626be644655ffbb36aec36a29de2"></iframe>
+
+（NRDStudio的可视化内容嵌入到其他网页，在不同平台看到图谱。）

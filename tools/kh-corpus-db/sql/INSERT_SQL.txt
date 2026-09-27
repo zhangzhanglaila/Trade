@@ -1,0 +1,38 @@
+DROP TABLE IF EXISTS `trade_out`;
+CREATE TABLE `trade_out`  (
+  `数据年月` date NULL DEFAULT NULL,
+  `贸易伙伴编码` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `贸易伙伴名称` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `商品编码` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `商品名称` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `贸易方式编码` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `贸易方式名称` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `注册地编码` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `注册地名称` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `数量` int NULL DEFAULT NULL,
+  `计量单位` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `人民币` decimal(18, 2) NULL DEFAULT NULL,
+	`单价` float
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
+
+LOAD DATA LOCAL INFILE 'F:/csv/1.csv'
+INTO TABLE trade_out
+CHARACTER SET utf8mb4
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(@data_year_month_str, @partner_code, @partner_name, @product_code, @product_name, @trade_method_code, @trade_method_name, @registration_code, @registration_name, @quantity, @unit, @rmb_amount, @price)
+SET 数据年月 = STR_TO_DATE(CONCAT(@data_year_month_str, '01'), '%Y%m%d'),
+    贸易伙伴编码 = @partner_code,
+    贸易伙伴名称 = @partner_name,
+    商品编码 = @product_code,
+    商品名称 = @product_name,
+    贸易方式编码 = @trade_method_code,
+    贸易方式名称 = @trade_method_name,
+    注册地编码 = @registration_code,
+    注册地名称 = @registration_name,
+    数量 = @quantity,
+    计量单位 = @unit,
+    人民币 = @rmb_amount,
+		单价 = @price;

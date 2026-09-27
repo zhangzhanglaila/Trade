@@ -1,0 +1,500 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10/"
+     xml:base="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10/"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10"/>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Object Properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#仓储位置 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#仓储位置">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#仓库"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#使用运输工具 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#使用运输工具">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输事件"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输工具"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#关联货物 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#关联货物">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易记录"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#关联风险 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#关联风险">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易主体"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#风险"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单证编号 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单证编号">
+        <rdfs:subPropertyOf rdf:resource="http://www.w3.org/2002/07/owl#topObjectProperty"/>
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发生地点 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发生地点">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发货地 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发货地">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#存放位置 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#存放位置">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#币种 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#币种">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货币"/>
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#金额"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#政策名称 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#政策名称">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#政策"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#时间锚点 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#时间锚点">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#时间"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#条款名称 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#条款名称">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易条款"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#检测状态 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#检测状态">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#检测事件"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#法规名称 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#法规名称">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#法规"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#涉及单证 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#涉及单证">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#涉及商品 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#涉及商品">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#涉及金额 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#涉及金额">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#金额"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#申报方 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#申报方">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易记录"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#国家"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输工具编号或名称 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输工具编号或名称">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输工具"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#适用法规 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#适用法规">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#法规"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#采用贸易条款 -->
+
+    <owl:ObjectProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#采用贸易条款">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#合同"/>
+        <rdfs:range rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易条款"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Data properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#商品编码 -->
+
+    <owl:DatatypeProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#商品编码">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#申报日期 -->
+
+    <owl:DatatypeProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#申报日期">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易记录"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#dateTime"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#行政区划代码 -->
+
+    <owl:DatatypeProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#行政区划代码">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货值金额 -->
+
+    <owl:DatatypeProperty rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货值金额">
+        <rdfs:domain rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#金额"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#decimal"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Classes
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#交易事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#交易事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#仓库 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#仓库">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发票 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发票">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发送方 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#发送方">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易主体"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#合同 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#合同"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#国家 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#国家">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#承运方 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#承运方">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易主体"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#报关单 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#报关单">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#接收方 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#接收方">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易主体"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#政策 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#政策"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#时间 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#时间"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#检测事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#检测事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#法规 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#法规"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#清关事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#清关事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#港口 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#港口">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#地点"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#省份 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#省份">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#国家"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#突发事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#突发事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#签约事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#签约事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货币 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货币"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#货物">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易要素"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易主体 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易主体"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易条款 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易条款"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易要素 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易要素"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易记录 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易记录">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#单据"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输工具 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#运输工具">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#贸易要素"/>
+    </owl:Class>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#金额 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#金额"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#风险 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#风险"/>
+    
+
+
+    <!-- http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#风险事件 -->
+
+    <owl:Class rdf:about="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#风险事件">
+        <rdfs:subClassOf rdf:resource="http://www.semanticweb.org/lenfrex/ontologies/2025/3/untitled-ontology-10#事件"/>
+    </owl:Class>
+</rdf:RDF>
+
+
+
+<!-- Generated by the OWL API (version 4.5.29.2024-05-13T12:11:03Z) https://github.com/owlcs/owlapi -->
+

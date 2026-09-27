@@ -1,0 +1,15 @@
+[project]
+name = "graph-builder-langchain"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "elasticsearch<9.0.0",
+    "flask>=3.1.1",
+    "langchain>=0.3.25",
+    "langchain-experimental>=0.3.4",
+    "langchain-neo4j>=0.4.0",
+    "langchain-openai>=0.3.19",
+    "neo4j>=5.28.1",
+    "pandas>=2.3.0",
+]

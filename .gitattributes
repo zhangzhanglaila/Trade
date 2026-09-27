@@ -1,0 +1,74 @@
+# =============================================================================
+# 换行符与文件类型统一策略
+#
+# 目标：仓库内文本统一存 LF；Windows 脚本检出时保持 CRLF，Linux 脚本保持 LF，
+#       二进制文件永不转换（避免被错命名的二进制文件被损坏）。
+# =============================================================================
+
+# 默认：自动识别。文本 → 索引内规范化为 LF，检出时按平台还原；二进制 → 原样不动。
+# 注意：这里用 text=auto 而非 text，目的是让 git 保留二进制自动探测能力。
+* text=auto
+
+# -----------------------------------------------------------------------------
+# 脚本：按目标平台固定换行符（这两条覆盖上面的 auto）
+# -----------------------------------------------------------------------------
+*.sh                text eol=lf
+*.bash              text eol=lf
+*.zsh               text eol=lf
+*.bat               text eol=crlf
+*.cmd               text eol=crlf
+*.ps1               text eol=crlf
+
+# -----------------------------------------------------------------------------
+# 二进制文件：显式声明，禁止任何转换
+# -----------------------------------------------------------------------------
+*.png               binary
+*.jpg               binary
+*.jpeg              binary
+*.gif               binary
+*.ico               binary
+*.bmp               binary
+*.webp              binary
+
+*.pdf               binary
+*.doc               binary
+*.docx              binary
+*.xls               binary
+*.xlsx              binary
+*.ppt               binary
+*.pptx              binary
+*.mp4               binary
+*.mov               binary
+
+*.zip               binary
+*.gz                binary
+*.xz               binary
+*.tar               binary
+*.7z                binary
+*.jar               binary
+*.war               binary
+*.dump              binary
+*.pth               binary
+*.pkl               binary
+*.safetensors       binary
+
+*.woff              binary
+*.woff2             binary
+*.ttf               binary
+*.eot               binary
+
+# -----------------------------------------------------------------------------
+# 被错命名的二进制文件（扩展名与实际内容不符），必须显式标为二进制
+# -----------------------------------------------------------------------------
+# 实际内容为 xlsx（PK 压缩包），若按 CSV 做换行转换会被损坏
+src/backend-training/data/merged_input.csv   binary
+
+# -----------------------------------------------------------------------------
+# 语言统计降噪
+# -----------------------------------------------------------------------------
+docs/**              linguist-documentation
+deliverables/**      linguist-documentation
+archive/**           linguist-documentation
+data/**              linguist-documentation
+src/pjcait/processor/library/go-openai/**     linguist-vendored
+src/pjcait/processor-v2/library/go-openai/**  linguist-vendored

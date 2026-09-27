@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.tdproject.generator.mapper.CorpusEntriesMapper">
+
+    <resultMap id="BaseResultMap" type="com.example.tdproject.generator.domain.CorpusEntries">
+            <id property="id" column="id" />
+            <result property="year" column="year" />
+            <result property="entryCount" column="entry_count" />
+            <result property="updateTime" column="update_time" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,year,entry_count,update_time
+    </sql>
+
+    <select id="selectYearlyStats" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM corpus_entries
+        ORDER BY year ASC
+    </select>
+</mapper>

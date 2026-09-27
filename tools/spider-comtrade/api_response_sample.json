@@ -1,0 +1,3 @@
+{
+  "error": "HTTPSConnectionPool(host='comtrade.un.org', port=443): Max retries exceeded with url: /api/ext/item?key=60638e0369d74e1c95708e40494b0eae&reporterCode=156&partnerCode=398&period=2023&cmdCode=TOTAL&typeCode=C&freqCode=A&includeGravity=false (Caused by ProxyError('Unable to connect to proxy', SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:997)'))))"
+}

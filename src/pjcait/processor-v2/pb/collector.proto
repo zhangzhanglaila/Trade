@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+option java_package = "cait.common.pb";
+option java_outer_classname = "CollectorPb";
+
+option go_package = "cait/app/service/pb";
+
+enum CrawlType {
+  CrawlTypePageRaw = 0;
+  CrawlTypeSelenium = 1;
+  CrawlTypeAdaptor = 2;
+  CrawlTypeEasySpider = 3;
+}
+
+enum Source {
+  SourcePeoplesDaily = 0;
+}
+
+message PageCrawlTask {
+  string id = 1;
+  CrawlType crawl_type = 2;
+  Source source = 3;
+
+  repeated string url = 4;
+  bool clean_html = 5;
+  bool archive = 6;
+
+  map<string, string> additional_info = 100;
+}
+
+enum CrawlStatusEnum {
+  CrawlStatReady = 0;
+  CrawlStatRunning = 1;
+  CrawlStatFinished = 2;
+  CrawlStatFailed = 3;
+}
+
+message CrawlStatus {
+  CrawlStatusEnum status = 1;
+  map<string, string> message = 2;
+}
+
+enum EasyspiderCallbackStat {
+  EsCbStatCommited = 0;
+  EsCbStatReceived = 1;
+}
+
+message EasyspiderCallbackInfo {
+  string callback = 1;
+  EasyspiderCallbackStat stat = 2;
+
+  int64 create_time = 3;
+  int64 timeout = 4;
+  int64 receive_time = 5;
+
+  string es_task_id = 6;
+  string es_invoke_id = 7;
+
+  string blame_instance = 8;
+  int32 pid_in_instance = 9;
+
+  map<string, string> params = 10;
+}

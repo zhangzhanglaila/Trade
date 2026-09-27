@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.tdproject.generator.mapper.OntologyMapper">
+
+    <!-- 通用查询映射结果 -->
+    <resultMap id="BaseResultMap" type="com.example.tdproject.generator.domain.Ontology">
+        <id column="id" property="id" />
+        <result column="project_name" property="projectName" />
+        <result column="creator" property="creator" />
+        <result column="version_number" property="versionNumber" />
+        <result column="namespace_uri" property="namespaceUri" />
+        <result column="version_status" property="versionStatus" />
+        <result column="parent_id" property="parentId" />
+        <result column="create_time" property="createTime" />
+        <result column="modify_time" property="modifyTime" />
+    </resultMap>
+
+    <!-- 通用查询结果列 -->
+    <sql id="Base_Column_List">
+        id, project_name, creator, version_number, namespace_uri,
+        version_status, parent_id, create_time, modify_time
+    </sql>
+
+    <!-- 分页查询（只返回当前使用的版本） -->
+    <select id="selectPage" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List" />
+        FROM ontology
+        WHERE version_status = 1  -- 只查询当前使用的版本
+        ORDER BY create_time DESC
+    </select>
+
+    <!-- 根据项目名称查询所有版本（包括历史版本） -->
+    <select id="selectByProjectName" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List" />
+        FROM ontology
+        WHERE project_name = #{projectName}
+        ORDER BY version_number ASC
+    </select>
+
+    <!-- 查询当前版本 -->
+    <select id="selectCurrentVersion" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List" />
+        FROM ontology
+        WHERE project_name = #{projectName}
+        AND version_status = 1  -- 只查询当前使用的版本
+        LIMIT 1
+    </select>
+
+    <!-- 查询历史版本 -->
+    <select id="selectHistoryVersions" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List" />
+        FROM ontology
+        WHERE project_name = #{projectName}
+        AND version_status = 0  -- 只查询历史版本
+        ORDER BY create_time DESC
+    </select>
+
+    <!-- 检查名称是否存在（只检查当前版本） -->
+    <select id="existsByName" resultType="java.lang.Boolean">
+        SELECT EXISTS(
+        SELECT id
+        FROM ontology
+        WHERE project_name = #{projectName}
+        AND version_status = 1  -- 只检查当前版本
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+        )
+    </select>
+
+    <!-- 根据ID查询，包含版本状态检查 -->
+    <select id="selectByIdWithStatus" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List" />
+        FROM ontology
+        WHERE id = #{id}
+        AND version_status = 1  -- 只返回当前版本
+    </select>
+
+    <!-- 批量更新版本状态 -->
+    <update id="updateVersionStatus">
+        UPDATE ontology
+        SET version_status = #{status}
+        WHERE project_name = #{projectName}
+    </update>
+
+    <!-- 插入新版本 -->
+    <insert id="insertNewVersion" parameterType="com.example.tdproject.generator.domain.Ontology">
+        INSERT INTO ontology (
+            project_name, creator, version_number, namespace_uri,
+            version_status, parent_id, create_time, modify_time
+        ) VALUES (
+                     #{projectName}, #{creator}, #{versionNumber}, #{namespaceUri},
+                     #{versionStatus}, #{parentId}, #{createTime}, #{modifyTime}
+                 )
+    </insert>
+
+</mapper>

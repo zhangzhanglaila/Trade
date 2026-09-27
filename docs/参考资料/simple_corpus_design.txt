@@ -1,0 +1,424 @@
+# 简化版语料库数据库设计（包含向量和关系特性）
+
+## 设计原则
+- 保留核心功能：增加、删除、查找
+- 简化数据库结构，同时保留向量特性
+- 维持关系型数据模型，支持知识图谱功能
+- 移除不必要的复杂度，保持基本的数据完整性
+
+## 简化后的数据表结构
+
+### 1. 新闻内容表 (news_content)
+```sql
+CREATE TABLE IF NOT EXISTS news_content (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title VARCHAR(500) NOT NULL,
+    "date" TIMESTAMP,
+    content_text TEXT NOT NULL,
+    url VARCHAR(1000) UNIQUE,
+    source VARCHAR(100),
+    title_vector VECTOR(768),
+    content_vector VECTOR(768),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 2. 实体表 (entities)
+```sql
+CREATE TABLE IF NOT EXISTS entities (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    entity_type VARCHAR(100) NOT NULL,
+    name_vector VECTOR(768),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, entity_type)
+);
+```
+
+### 3. 关系表 (relationships)
+```sql
+CREATE TABLE IF NOT EXISTS relationships (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_entity_id UUID REFERENCES entities(id) ON DELETE CASCADE,
+    target_entity_id UUID REFERENCES entities(id) ON DELETE CASCADE,
+    relationship_type VARCHAR(100) NOT NULL,
+    relation_vector VECTOR(768),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_not_self_relation CHECK (source_entity_id <> target_entity_id)
+);
+```
+
+### 4. 新闻实体关联表 (news_entities)
+```sql
+CREATE TABLE IF NOT EXISTS news_entities (
+    news_id UUID REFERENCES news_content(id) ON DELETE CASCADE,
+    entity_id UUID REFERENCES entities(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (news_id, entity_id)
+);
+
+-- 实体属性表（用于扩展实体信息，支持知识图谱的丰富表达）
+CREATE TABLE IF NOT EXISTS entity_properties (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    entity_id UUID REFERENCES entities(id) ON DELETE CASCADE,
+    property_name VARCHAR(100) NOT NULL,
+    property_value TEXT,
+    property_type VARCHAR(50) DEFAULT 'string',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 关系属性表（用于扩展关系信息，支持更复杂的知识表示）
+CREATE TABLE IF NOT EXISTS relationship_properties (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    relationship_id UUID REFERENCES relationships(id) ON DELETE CASCADE,
+    property_name VARCHAR(100) NOT NULL,
+    property_value TEXT,
+    property_type VARCHAR(50) DEFAULT 'string',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+## 索引设计（包含向量索引）
+
+```sql
+-- 基本索引
+CREATE INDEX IF NOT EXISTS idx_news_content_title ON news_content(title);
+CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships(relationship_type);
+
+-- 增强关系查询的索引
+CREATE INDEX IF NOT EXISTS idx_news_entities_entity ON news_entities(entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_properties_entity ON entity_properties(entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_properties_name ON entity_properties(property_name);
+CREATE INDEX IF NOT EXISTS idx_relationship_properties_rel ON relationship_properties(relationship_id);
+CREATE INDEX IF NOT EXISTS idx_relationship_properties_name ON relationship_properties(property_name);
+
+-- 向量索引
+CREATE INDEX IF NOT EXISTS idx_news_title_vector ON news_content USING ivfflat(title_vector vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_news_content_vector ON news_content USING ivfflat(content_vector vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_entities_name_vector ON entities USING ivfflat(name_vector vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_relationships_vector ON relationships USING ivfflat(relation_vector vector_cosine_ops) WITH (lists = 100);
+```
+
+## 简化的函数
+
+### 1. 插入新闻函数（支持向量）
+```sql
+CREATE OR REPLACE FUNCTION insert_news(
+    p_title VARCHAR(500),
+    p_content_text TEXT,
+    p_date TIMESTAMP DEFAULT NULL,
+    p_url VARCHAR(1000) DEFAULT NULL,
+    p_source VARCHAR(100) DEFAULT NULL,
+    p_title_vector VECTOR(768) DEFAULT NULL,
+    p_content_vector VECTOR(768) DEFAULT NULL
+) RETURNS UUID AS $$
+DECLARE
+    new_news_id UUID;
+BEGIN
+    INSERT INTO news_content (title, content_text, "date", url, source, title_vector, content_vector)
+    VALUES (p_title, p_content_text, p_date, p_url, p_source, p_title_vector, p_content_vector)
+    RETURNING id INTO new_news_id;
+    
+    RETURN new_news_id;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+### 2. 添加实体函数（支持向量）
+```sql
+CREATE OR REPLACE FUNCTION add_entity(
+    p_name VARCHAR(255),
+    p_entity_type VARCHAR(100),
+    p_name_vector VECTOR(768) DEFAULT NULL
+) RETURNS UUID AS $$
+DECLARE
+    entity_id UUID;
+BEGIN
+    INSERT INTO entities (name, entity_type, name_vector)
+    VALUES (p_name, p_entity_type, p_name_vector)
+    ON CONFLICT (name, entity_type) DO UPDATE
+    SET updated_at = CURRENT_TIMESTAMP
+    RETURNING id INTO entity_id;
+    
+    RETURN entity_id;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+### 3. 添加关系函数（支持向量）
+```sql
+CREATE OR REPLACE FUNCTION add_relationship(
+    p_source_entity_id UUID,
+    p_target_entity_id UUID,
+    p_relationship_type VARCHAR(100),
+    p_relation_vector VECTOR(768) DEFAULT NULL
+) RETURNS UUID AS $$
+DECLARE
+    relationship_id UUID;
+BEGIN
+    -- 检查源实体和目标实体是否存在
+    IF NOT EXISTS (SELECT 1 FROM entities WHERE id = p_source_entity_id) THEN
+        RAISE EXCEPTION '源实体不存在';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM entities WHERE id = p_target_entity_id) THEN
+        RAISE EXCEPTION '目标实体不存在';
+    END IF;
+    
+    -- 创建关系
+    INSERT INTO relationships (source_entity_id, target_entity_id, relationship_type, relation_vector)
+    VALUES (p_source_entity_id, p_target_entity_id, p_relationship_type, p_relation_vector)
+    RETURNING id INTO relationship_id;
+    
+    RETURN relationship_id;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+### 4. 关联新闻和实体函数
+```sql
+CREATE OR REPLACE FUNCTION link_news_entity(
+    p_news_id UUID,
+    p_entity_id UUID
+) RETURNS BOOLEAN AS $$
+BEGIN
+    -- 检查新闻和实体是否存在
+    IF NOT EXISTS (SELECT 1 FROM news_content WHERE id = p_news_id) THEN
+        RAISE EXCEPTION '新闻不存在';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM entities WHERE id = p_entity_id) THEN
+        RAISE EXCEPTION '实体不存在';
+    END IF;
+    
+    -- 创建关联
+    INSERT INTO news_entities (news_id, entity_id)
+    VALUES (p_news_id, p_entity_id)
+    ON CONFLICT DO NOTHING;
+    
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+### 5. 向量搜索函数
+```sql
+CREATE OR REPLACE FUNCTION search_similar_items(
+    p_query_vector VECTOR(768),
+    p_table_name VARCHAR(100),
+    p_vector_column VARCHAR(100),
+    p_id_column VARCHAR(100) DEFAULT 'id',
+    p_limit INT DEFAULT 10,
+    p_threshold FLOAT DEFAULT 0.7
+) RETURNS TABLE (
+    item_id UUID,
+    similarity_score FLOAT
+) AS $$
+BEGIN
+    RETURN QUERY EXECUTE format(
+        'SELECT 
+            %I::UUID as item_id, 
+            (%I <=> $1) as similarity_score 
+         FROM 
+            %I 
+         WHERE 
+            %I IS NOT NULL 
+            AND (%I <=> $1) > $2 
+         ORDER BY 
+            similarity_score DESC 
+         LIMIT $3',
+        p_id_column, p_vector_column, p_table_name, p_vector_column, p_vector_column
+    ) USING p_query_vector, p_threshold, p_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+### 6. 关系查询函数
+```sql
+CREATE OR REPLACE FUNCTION get_entity_relationships(
+    p_entity_id UUID,
+    p_relationship_type VARCHAR(100) DEFAULT NULL,
+    p_direction VARCHAR(10) DEFAULT 'all' -- 'outgoing', 'incoming', 'all'
+) RETURNS TABLE (
+    related_entity_id UUID,
+    related_entity_name VARCHAR(255),
+    relationship_type VARCHAR(100),
+    direction VARCHAR(10)
+) AS $$
+BEGIN
+    IF p_direction = 'outgoing' OR p_direction = 'all' THEN
+        RETURN QUERY
+        SELECT 
+            e.id, e.name, r.relationship_type, 'outgoing' as direction
+        FROM 
+            relationships r
+        JOIN 
+            entities e ON r.target_entity_id = e.id
+        WHERE 
+            r.source_entity_id = p_entity_id
+            AND (p_relationship_type IS NULL OR r.relationship_type = p_relationship_type);
+    END IF;
+    
+    IF p_direction = 'incoming' OR p_direction = 'all' THEN
+        RETURN QUERY
+        SELECT 
+            e.id, e.name, r.relationship_type, 'incoming' as direction
+        FROM 
+            relationships r
+        JOIN 
+            entities e ON r.source_entity_id = e.id
+        WHERE 
+            r.target_entity_id = p_entity_id
+            AND (p_relationship_type IS NULL OR r.relationship_type = p_relationship_type);
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+### 7. 实体属性管理函数
+```sql
+CREATE OR REPLACE FUNCTION set_entity_property(
+    p_entity_id UUID,
+    p_property_name VARCHAR(100),
+    p_property_value TEXT,
+    p_property_type VARCHAR(50) DEFAULT 'string'
+) RETURNS BOOLEAN AS $$
+BEGIN
+    -- 检查实体是否存在
+    IF NOT EXISTS (SELECT 1 FROM entities WHERE id = p_entity_id) THEN
+        RAISE EXCEPTION '实体不存在';
+    END IF;
+    
+    -- 设置或更新属性
+    INSERT INTO entity_properties (entity_id, property_name, property_value, property_type)
+    VALUES (p_entity_id, p_property_name, p_property_value, p_property_type)
+    ON CONFLICT ON CONSTRAINT entity_properties_entity_id_property_name_key
+    DO UPDATE SET 
+        property_value = EXCLUDED.property_value,
+        property_type = EXCLUDED.property_type,
+        updated_at = CURRENT_TIMESTAMP;
+    
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 添加约束确保实体属性的唯一性
+ALTER TABLE entity_properties ADD CONSTRAINT entity_properties_entity_id_property_name_key UNIQUE(entity_id, property_name);
+ALTER TABLE relationship_properties ADD CONSTRAINT relationship_properties_relationship_id_property_name_key UNIQUE(relationship_id, property_name);
+```
+
+## 查询示例（包含向量搜索和关系查询）
+
+```sql
+-- 查询所有新闻
+SELECT * FROM news_content;
+
+-- 根据ID查询新闻
+SELECT * FROM news_content WHERE id = 'uuid-here';
+
+-- 查询所有实体
+SELECT * FROM entities;
+
+-- 根据类型查询实体
+SELECT * FROM entities WHERE entity_type = '人物';
+
+-- 查询实体之间的关系
+SELECT * FROM relationships;
+
+-- 查询新闻中的实体
+SELECT n.title, e.name, e.entity_type 
+FROM news_content n
+JOIN news_entities ne ON n.id = ne.news_id
+JOIN entities e ON ne.entity_id = e.id;
+
+-- 向量相似度搜索示例
+-- 搜索相似标题的新闻
+SELECT nc.id, nc.title, (nc.title_vector <=> '[0.1, 0.2, ..., 0.768]') as similarity
+FROM news_content nc
+WHERE nc.title_vector IS NOT NULL
+ORDER BY similarity DESC
+LIMIT 10;
+
+-- 使用函数进行向量搜索
+SELECT * FROM search_similar_items(
+    '[0.1, 0.2, ..., 0.768]', -- 示例向量
+    'news_content', 
+    'content_vector'
+);
+
+-- 关系查询：查找与特定实体相关的所有实体
+SELECT 
+    e1.name as entity1,
+    r.relationship_type,
+    e2.name as entity2
+FROM 
+    relationships r
+JOIN 
+    entities e1 ON r.source_entity_id = e1.id
+JOIN 
+    entities e2 ON r.target_entity_id = e2.id
+WHERE 
+    e1.name = '特定实体名称';
+
+-- 深度关系查询：查找通过特定关系类型连接的实体
+SELECT 
+    e1.name as source,
+    r1.relationship_type as first_relation,
+    e2.name as middle,
+    r2.relationship_type as second_relation,
+    e3.name as target
+FROM 
+    relationships r1
+JOIN 
+    entities e1 ON r1.source_entity_id = e1.id
+JOIN 
+    entities e2 ON r1.target_entity_id = e2.id
+JOIN 
+    relationships r2 ON r2.source_entity_id = e2.id
+JOIN 
+    entities e3 ON r2.target_entity_id = e3.id
+WHERE 
+    e1.name = '起始实体' AND
+    r1.relationship_type = '参与' AND
+    r2.relationship_type = '拥有';
+
+-- 实体属性查询
+SELECT 
+    e.name,
+    e.entity_type,
+    ep.property_name,
+    ep.property_value,
+    ep.property_type
+FROM 
+    entities e
+JOIN 
+    entity_properties ep ON e.id = ep.entity_id
+WHERE 
+    e.name = '特定实体';
+
+-- 使用函数查询实体关系
+SELECT * FROM get_entity_relationships(
+    (SELECT id FROM entities WHERE name = '特定实体'),
+    '关联',
+    'outgoing'
+);
+```
+
+## 基本删除操作示例
+
+```sql
+-- 删除新闻（会级联删除相关关联）
+DELETE FROM news_content WHERE id = 'uuid-here';
+
+-- 删除实体（会级联删除相关关系和关联）
+DELETE FROM entities WHERE id = 'uuid-here';
+
+-- 删除特定关系
+DELETE FROM relationships WHERE id = 'uuid-here';
+```

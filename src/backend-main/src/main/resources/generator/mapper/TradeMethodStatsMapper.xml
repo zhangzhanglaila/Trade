@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 注意：namespace 正确路径，无多余 .mapper 层级 -->
+<mapper namespace="com.example.tdproject.generator.mapper.TradeMethodStatsMapper">
+
+    <!-- 补充完整的 BaseResultMap，包含所有实体类字段 -->
+    <resultMap id="BaseResultMap" type="com.example.tdproject.generator.domain.TradeMethodStats">
+        <id property="id" column="id" />
+        <result property="countryName" column="country_name" />
+        <result property="tradeMethod" column="trade_method" />
+        <result property="tradeAmount" column="trade_amount" />
+        <result property="statYear" column="stat_year" />  <!-- 补充实体类字段 -->
+        <result property="statMonth" column="stat_month" />  <!-- 补充实体类字段 -->
+    </resultMap>
+
+    <!-- 补充完整的 Base_Column_List，包含所有表字段 -->
+    <sql id="Base_Column_List">
+        id, country_name, trade_method, trade_amount, stat_year, stat_month
+    </sql>
+
+    <!-- 接口中定义的查询方法：按国家统计贸易占比 -->
+    <select id="selectCountryTradeRatio" resultType="java.util.Map">
+        SELECT
+            country_name,
+            SUM(trade_amount) as total_amount
+        FROM trade_method_stats
+        WHERE stat_year = #{year} AND stat_month = #{month}
+        GROUP BY country_name
+    </select>
+
+    <!-- 接口中定义的查询方法：按贸易方式统计占比 -->
+    <select id="selectTradeMethodRatio" resultType="java.util.Map">
+        SELECT
+            trade_method,
+            SUM(trade_amount) as total_amount
+        FROM trade_method_stats
+        WHERE stat_year = #{year} AND stat_month = #{month}
+        GROUP BY trade_method
+    </select>
+</mapper>

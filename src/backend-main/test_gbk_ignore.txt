@@ -1,0 +1,5285 @@
+package com.example.tdproject.generator.service.impl;
+
+
+
+
+
+
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+
+
+
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+
+
+
+import com.baomidou.mybatisplus.core.metadata.IPage;
+
+
+
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+
+
+
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+
+
+
+import com.example.tdproject.generator.domain.ClassInheritance;
+
+
+
+import com.example.tdproject.generator.domain.IndividualPropertyValue;
+
+
+
+import com.example.tdproject.generator.domain.IndividualType;
+
+
+
+import com.example.tdproject.generator.domain.Ontology;
+
+
+
+import com.example.tdproject.generator.domain.OntologyClass;
+
+
+
+import com.example.tdproject.generator.domain.OntologyIndividual;
+
+
+
+import com.example.tdproject.generator.mapper.*;
+
+
+
+import com.example.tdproject.generator.service.OntologyService;
+
+
+
+import com.example.tdproject.ontology.dto.*;
+
+
+
+import com.example.tdproject.ontology.enums.RdfFileFormat;
+
+
+
+import com.example.tdproject.ontology.repository.GraphRepository;
+
+
+
+import jakarta.servlet.http.HttpServletResponse;
+
+
+
+import lombok.extern.slf4j.Slf4j;
+
+
+
+import org.apache.jena.rdf.model.Model;
+
+
+
+import org.apache.jena.rdf.model.ModelFactory;
+
+
+
+import org.apache.jena.rdf.model.Property;
+
+
+
+import org.apache.jena.rdf.model.Resource;
+
+
+
+import org.apache.jena.vocabulary.RDF;
+
+
+
+import org.apache.jena.vocabulary.RDFS;
+
+
+
+import org.apache.poi.ss.usermodel.*;
+
+
+
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+
+
+import org.springframework.beans.BeanUtils;
+
+
+
+import org.springframework.beans.factory.annotation.Autowired;
+
+
+
+import org.springframework.stereotype.Service;
+
+
+
+import org.springframework.transaction.annotation.Transactional;
+
+
+
+import org.springframework.util.StringUtils;
+
+
+
+import org.springframework.web.multipart.MultipartFile;
+
+
+
+
+
+
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+
+
+
+
+
+
+import java.io.IOException;
+
+
+
+import java.io.InputStream;
+
+
+
+import java.io.OutputStream;
+
+
+
+import java.io.OutputStreamWriter;
+
+
+
+import java.io.PrintWriter;
+
+
+
+import java.net.URLEncoder;
+
+
+
+import java.nio.charset.StandardCharsets;
+
+
+
+import java.text.SimpleDateFormat;
+
+
+
+import java.time.LocalDateTime;
+
+
+
+import java.util.ArrayList;
+
+
+
+import java.util.Collections;
+
+
+
+import java.util.Date;
+
+
+
+import java.util.HashMap;
+
+
+
+import java.util.List;
+
+
+
+import java.util.Map;
+
+
+
+import java.util.stream.Collectors;
+
+
+
+
+
+
+
+@Service
+
+
+
+@Slf4j
+
+
+
+public class OntologyServiceImpl extends ServiceImpl<OntologyMapper, Ontology> implements OntologyService {
+
+
+
+
+
+
+
+    @Autowired
+
+
+
+    private GraphRepository graphRepository;
+
+
+
+    
+
+
+
+    @Autowired
+
+
+
+    private OntologyClassMapper ontologyClassMapper;
+
+
+
+    
+
+
+
+    @Autowired
+
+
+
+    private OntologyIndividualMapper ontologyIndividualMapper;
+
+
+
+    
+
+
+
+    @Autowired
+
+
+
+    private ClassInheritanceMapper classInheritanceMapper;
+
+
+
+    
+
+
+
+    @Autowired
+
+
+
+    private IndividualTypeMapper individualTypeMapper;
+
+
+
+    
+
+
+
+    @Autowired
+
+
+
+    private IndividualPropertyValueMapper individualPropertyValueMapper;
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閸掑棝銆夐弻顕楄ぐ鎾抽悧鍫熸拱閺堫兛缍嬮敍鍫滅矌閻樿埖浣疯礋1閻ㄥ嫬缍嬮崜宥囬張顒婄礆
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public IPage<Ontology> selectPage(Integer pageNum, Integer pageSize) {
+
+
+
+        Page<Ontology> page = new Page<>(pageNum, pageSize);
+
+
+
+        return baseMapper.selectPage(page, new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getVersionStatus, 1)  // 1鐞涖劎銇氳ぐ鎾抽悧鍫熸拱
+
+
+
+                .orderByDesc(Ontology::getCreateTime));
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閺嶅祦妞ゅ湱娲伴崥宥囆為弻顕楅幍閺堥張顒婄礄閸栧懎鎯堥崢鍡楀蕉閻楀牊婀伴敍?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public List<Ontology> getVersionsByProjectName(String projectName) {
+
+
+
+        return baseMapper.selectList(new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .orderByAsc(Ontology::getVersionNumber));  // 閹搁張褰块崡鍥х碍閹烘帒
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閺屻儵銆嶉惄顔兼倳缁夌増妲搁崥鍑℃ê閿涘牅绮庡Λ閺屻儱缍嬮崜宥囬張顒婄礆
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public boolean checkNameExists(String projectName, Long excludeId) {
+
+
+
+        LambdaQueryWrapper<Ontology> queryWrapper = new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionStatus, 1);  // 閸欘亝顥呴弻銉ョ秼閸撳秶澧楅張?
+
+
+
+
+
+
+
+        if (excludeId != null) {
+
+
+
+            queryWrapper.ne(Ontology::getId, excludeId);  // 閹烘帡娅庨懛顏囬煩閿涘牏鏁ゆ禍搴㈡纯閺傛澘閺咁垽
+
+
+
+        }
+
+
+
+        return baseMapper.exists(queryWrapper);
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 娣囨繂鐡ㄩ弬鐗堟拱娴ｆ搫绱欓崚婵嗩潗閻楀牊婀伴敍?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public boolean save(Ontology entity) {
+
+
+
+        Date now = new Date();
+
+
+
+        entity.setCreateTime(now);
+
+
+
+        entity.setModifyTime(now);
+
+
+
+        entity.setVersionStatus(1);  // 閺傛澘鍨辨椽鐠併倓璐熻ぐ鎾抽悧鍫熸拱
+
+
+
+        // 閸掓繂顫愰悧鍫熸拱閸欑兘鐠併倓1.0
+
+
+
+        if (entity.getVersionNumber() == null || entity.getVersionNumber().isEmpty()) {
+
+
+
+            entity.setVersionNumber("1.0");
+
+
+
+        }
+
+
+
+        return super.save(entity);
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閺囧瓨鏌婇張顑跨秼閿涘牆鍨辩儤鏌婇悧鍫熸拱閿涘苯閻楀牊婀版潪顑胯礋閸樺棗褰堕悧鍫熸拱?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional  // 娴滃熸穱婵婄槈閿涘瞼鈥樻穱婵堥張鍨忛幑銏㈡畱閸樼喎鐡欓幀?
+
+
+
+    public boolean updateById(Ontology entity) {
+
+
+
+        // 1. 閺屻儴顕楄ぐ鎾抽悧鍫熸拱
+
+
+
+        Ontology current = baseMapper.selectById(entity.getId());
+
+
+
+        if (current == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+        String projectName = current.getProjectName();
+
+
+
+
+
+
+
+        // 2. 鐏忓棜顕氭い娲版稉澧嶉張澶婄秼閸撳秶澧楅張顒冩祮娑撳搫宸婚崣澧楅張顒婄礄鍘ゆ径姘遍張鍟跨粣渚婄礆
+
+
+
+        int updateCount = baseMapper.update(null, new LambdaUpdateWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionStatus, 1)
+
+
+
+                .set(Ontology::getVersionStatus, 0));  // 0鐞涖劎銇氶崢鍡楀蕉閻楀牊
+
+
+
+        log.info("妞ゅ湱娲癧{}]閻ㄥ嫬缍嬮崜宥囬張鍑℃潪顑胯礋閸樺棗褰堕悧鍫熸拱閿涘苯濂栭崫宥堫攽? {}", projectName, updateCount);
+
+
+
+
+
+
+
+        // 3. 閸掓稑缂撻弬澧楅張?
+
+
+
+        Ontology newVersion = new Ontology();
+
+
+
+        BeanUtils.copyProperties(current, newVersion);  // 婢跺秴鍩楅崢鐔洪張鐫橀幀?
+
+
+
+        newVersion.setId(null);  // 闁插秶鐤咺D閿涘矂浼╅崗宥勫瘜闁款喖鍟跨粣?
+
+
+
+        // 閺囧瓨鏌婇弬鏉跨潣褝绱欐禒鍛邦洬閻╂牠缁屽搫鐡у▓纰夌礆
+
+
+
+        if (entity.getProjectName() != null) {
+
+
+
+            newVersion.setProjectName(entity.getProjectName());
+
+
+
+        }
+
+
+
+        if (entity.getNamespaceUri() != null) {
+
+
+
+            newVersion.setNamespaceUri(entity.getNamespaceUri());
+
+
+
+        }
+
+
+
+        // 閻㈢喐鍨氶弬澧楅張褰块敍鍫濐洤1.0 -> 1.1?
+
+
+
+        newVersion.setVersionNumber(generateNewVersion(current.getVersionNumber()));
+
+
+
+        newVersion.setParentId(current.getId());  // 閻栧墎澧楅張顒佸瘹閸氭垵閻楀牊
+
+
+
+        newVersion.setVersionStatus(1);  // 鐠佸彞璐熻ぐ鎾抽悧鍫熸拱
+
+
+
+        newVersion.setCreateTime(new Date());
+
+
+
+        newVersion.setModifyTime(new Date());
+
+
+
+
+
+
+
+        // 4. 閺嶏繝鐛欓悧鍫熸拱閸欏嘲娑撯偓褍鑻熸穱婵嗙摠
+
+
+
+        if (checkVersionExists(newVersion.getProjectName(), newVersion.getVersionNumber())) {
+
+
+
+            log.error("妞ゅ湱娲癧{}]閻楀牊婀伴崣[{}]瀹告彃鐡ㄩ崷顭掔礉閺傛澘顤冩径", newVersion.getProjectName(), newVersion.getVersionNumber());
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+        return baseMapper.insert(newVersion) > 0;
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閺嶏繝鐛欐い+閻楀牊婀伴崣宄版暜娑撯偓?
+
+
+
+     */
+
+
+
+    private boolean checkVersionExists(String projectName, String versionNumber) {
+
+
+
+        return baseMapper.exists(new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionNumber, versionNumber));
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閼惧嘲褰囨い娲伴惃缍嬮崜宥囬張?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public Ontology getCurrentVersion(String projectName) {
+
+
+
+        return baseMapper.selectOne(new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionStatus, 1)
+
+
+
+                .last("limit 1"));  // 顔荤箽閸欘亣绻戦崶鐐伴弶?
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閻楀牊婀伴崶鐐寸泊閿涘牆鐨㈤崢鍡楀蕉閻楀牊婀扮拋鍙ヨ礋瑜版挸澧犻悧鍫熸拱?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional
+
+
+
+    public boolean rollbackVersion(Long versionId) {
+
+
+
+        // 1. 閺屻儴顕楃憰浣告礀濠婃氨娈戦崢鍡楀蕉閻楀牊
+
+
+
+        Ontology history = baseMapper.selectById(versionId);
+
+
+
+        if (history == null || history.getVersionStatus() != 0) {  // 0娑撳搫宸婚崣澧楅張?
+
+
+
+            log.error("閸ョ偞绮存径瑙﹂敍澧楅張ID[{}]娑撳秴鐡ㄩ崷銊﹀灗娑撳秵妲搁崢鍡楀蕉閻楀牊", versionId);
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String projectName = history.getProjectName();
+
+
+
+
+
+
+
+        // 2. 鐏忓棜顕氭い娲版稉澧嶉張澶婄秼閸撳秶澧楅張顒冩祮娑撳搫宸婚崣澧楅張?
+
+
+
+        int currentToHistory = baseMapper.update(null, new LambdaUpdateWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionStatus, 1)
+
+
+
+                .set(Ontology::getVersionStatus, 0));
+
+
+
+        log.info("妞ゅ湱娲癧{}]閻ㄥ嫬缍嬮崜宥囬張鍑℃潪顑胯礋閸樺棗褰堕悧鍫熸拱閿涘苯濂栭崫宥堫攽? {}", projectName, currentToHistory);
+
+
+
+
+
+
+
+        // 3. 鐏忓棛娲伴弽鍥у坊閸欒尙澧楅張顒冩祮娑撳搫缍嬮崜宥囬張?
+
+
+
+        Ontology updateEntity = new Ontology();
+
+
+
+        updateEntity.setId(versionId);
+
+
+
+        updateEntity.setVersionStatus(1);
+
+
+
+        updateEntity.setModifyTime(new Date());
+
+
+
+
+
+
+
+        int rows = baseMapper.updateById(updateEntity);
+
+
+
+        log.info("妞ゅ湱娲癧{}]閻ㄥ嫬宸婚崣澧楅張[{}]瀹歌尪娴嗘稉鍝勭秼閸撳秶澧楅張顒婄礉瑜板崬鎼风悰灞炬殶: {}", projectName, versionId, rows);
+
+
+
+
+
+
+
+        return rows > 0;
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閼惧嘲褰囨い娲伴惃宸婚崣澧楅張?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public List<Ontology> getHistoryVersions(String projectName) {
+
+
+
+        return baseMapper.selectList(new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionStatus, 0)  // 0娑撳搫宸婚崣澧楅張?
+
+
+
+                .orderByDesc(Ontology::getCreateTime));
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閹稿灡瀵よ桨姹夐崚鍡涢弻顕楄ぐ鎾抽悧鍫熸拱閺堫兛
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public IPage<Ontology> searchByCreator(Integer pageNum, Integer pageSize, String creator) {
+
+
+
+        Page<Ontology> page = new Page<>(pageNum, pageSize);
+
+
+
+        return baseMapper.selectPage(page, new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getCreator, creator)
+
+
+
+                .eq(Ontology::getVersionStatus, 1)
+
+
+
+                .orderByDesc(Ontology::getCreateTime));
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閹搁惄顔兼倳锛勭ˇ閸栧綊鍘ら崚鍡涢弻顕楄ぐ鎾抽悧鍫熸拱閺堫兛
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public IPage<Ontology> searchByProjectName(Integer pageNum, Integer pageSize, String projectName) {
+
+
+
+        Page<Ontology> page = new Page<>(pageNum, pageSize);
+
+
+
+        return baseMapper.selectPage(page, new LambdaQueryWrapper<Ontology>()
+
+
+
+                .like(Ontology::getProjectName, projectName)
+
+
+
+                .eq(Ontology::getVersionStatus, 1)
+
+
+
+                .orderByDesc(Ontology::getCreateTime));
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 娴燛xcel鐎电厧鍙嗛張顑跨秼閿涘牊閹镐線鍣搁崥宥嗩梾濞寸窗鐎涙ê閸掓瑦娲块弬绱濇稉宥呯摠閸︺劌閺傛澘顤冮敍?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional
+
+
+
+    public boolean importOntology(MultipartFile excelFile, String projectName, String creator) {
+
+
+
+        try {
+
+
+
+            // 1. 妤犲矁鐦夐弬鍥︾猾璇
+
+
+
+            String fileName = excelFile.getOriginalFilename();
+
+
+
+            if (fileName == null || (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls"))) {
+
+
+
+                log.error("鐎电厧鍙嗘径瑙﹂敍灞肩矌顖涘瘮Excel閺傚洣");
+
+
+
+                throw new RuntimeException("娴犲懏?xlsx?xls閺嶇厧绱￠惃Excel閺傚洣");
+
+
+
+            }
+
+
+
+
+
+
+
+            // 2. 閺屻儲鏋冩禒鑸垫Ц閸氾缚璐熺粚?
+
+
+
+            if (excelFile.isEmpty()) {
+
+
+
+                throw new RuntimeException("閺傚洣娆㈡稉宥堝厴娑撹櫣");
+
+
+
+            }
+
+
+
+
+
+
+
+            // 3. 鐟欙絾鐎紼xcel閺傚洣
+
+
+
+            InputStream inputStream = excelFile.getInputStream();
+
+
+
+            Workbook workbook = WorkbookFactory.create(inputStream);
+
+
+
+            Sheet sheet = workbook.getSheetAt(0);  // 閸欐牜顑囨稉娑搒heet
+
+
+
+            Row firstDataRow = sheet.getRow(1);  // ?鐞涘奔璐熺悰銊ャ仈閿涘瞼1鐞涘奔璐熼弫鐗堝祦
+
+
+
+
+
+
+
+            // 4. 娴燛xcel娑擃叀顕伴崣銆嶉惄顔兼倳缁夊府绱欐导妯哄帥娴ｈ法Excel娑擃厾娈戦崥宥囆為敍?
+
+
+
+            String excelProjectName = projectName;
+
+
+
+            if (firstDataRow != null && firstDataRow.getCell(1) != null) {
+
+
+
+                excelProjectName = firstDataRow.getCell(1).getStringCellValue();
+
+
+
+            }
+
+
+
+            if (StringUtils.isEmpty(excelProjectName)) {
+
+
+
+                throw new RuntimeException("妞ゅ湱娲伴崥宥囆炴稉宥堝厴娑撹櫣");
+
+
+
+            }
+
+
+
+
+
+
+
+            // 5. 閺屻儵銆嶉惄顔芥Ц閸氾箑鍑℃ê
+
+
+
+            boolean exists = checkNameExists(excelProjectName, null);
+
+
+
+            if (exists) {
+
+
+
+                // 妞ゅ湱娲版ê閿涙碍澧界悰灞炬纯閺傜増鎼锋担婊愮礄閸掓稑缂撻弬澧楅張顒婄礆
+
+
+
+                log.warn("妞ゅ湱娲伴崥宥囆瀃{}]瀹告彃鐡ㄩ崷顭掔礉鐏忓棙澧界悰灞炬纯閺傜増鎼锋担?, excelProjectName);
+
+
+
+                Ontology current = getCurrentVersion(excelProjectName);
+
+
+
+                if (current == null) {
+
+
+
+                    throw new RuntimeException("妞ゅ湱娲拌ぐ鎾抽悧鍫熸拱娑撳秴鐡ㄩ崷顭掔礉閺冪姵纭堕弴瀛樻煀");
+
+
+
+                }
+
+
+
+
+
+
+
+                // 娴燛xcel鐟欙絾鐎介弴瀛樻煀娣団剝
+
+
+
+                Ontology updateEntity = new Ontology();
+
+
+
+                updateEntity.setId(current.getId());
+
+
+
+                if (firstDataRow != null && firstDataRow.getCell(3) != null) {
+
+
+
+                    updateEntity.setNamespaceUri(firstDataRow.getCell(3).getStringCellValue());
+
+
+
+                }
+
+
+
+                return updateById(updateEntity);  // 鐠嬪啰鏁ら弴瀛樻煀閺傜《閸掓稑缂撻弬澧楅張?
+
+
+
+            } else {
+
+
+
+                // 妞ゅ湱娲版稉宥呯摠閸︻煉绱伴幍褑顢戦弬鏉款杻閹垮秳
+
+
+
+                log.info("妞ゅ湱娲伴崥宥囆瀃{}]娑撳秴鐡ㄩ崷顭掔礉鐏忓棙澧界悰灞炬煀婢х偞鎼锋担?, excelProjectName);
+
+
+
+                // 鐟欙絾鐎介崨钘夋倳缁屾椽妫块敍鍫ョ帛鐠併倕?妞ゅ湱娲伴崥宥忕礆
+
+
+
+                String namespaceUri = "http://example.com/ontology/" + excelProjectName;
+
+
+
+                if (firstDataRow != null && firstDataRow.getCell(3) != null) {
+
+
+
+                    namespaceUri = firstDataRow.getCell(3).getStringCellValue();
+
+
+
+                }
+
+
+
+
+
+
+
+                // 閸掓稑缂撻弬鐗堟拱?
+
+
+
+                Ontology ontology = new Ontology();
+
+
+
+                ontology.setProjectName(excelProjectName);
+
+
+
+                ontology.setCreator(creator);
+
+
+
+                ontology.setNamespaceUri(namespaceUri);
+
+
+
+                ontology.setVersionNumber("1.0");  // 閸掓繂顫愰悧鍫熸拱
+
+
+
+                ontology.setVersionStatus(1);
+
+
+
+                ontology.setCreateTime(new Date());
+
+
+
+                ontology.setModifyTime(new Date());
+
+
+
+
+
+
+
+                return baseMapper.insert(ontology) > 0;
+
+
+
+            }
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("鐎电厧鍙嗛張顑跨秼婢惰精", e);
+
+
+
+            throw new RuntimeException("鐎电厧鍙嗘径瑙﹂敍? + e.getMessage());
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 娴燛xcel鐎电厧鍙嗛獮鑸垫纯閺傜増婀版担鎿勭礄閸掓稑缂撻弬澧楅張顒婄礆
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional
+
+
+
+    public boolean importAndUpdateOntology(MultipartFile excelFile, String projectName, String creator) {
+
+
+
+        // 鐎圭偟骞囬柅鏄忕帆娑搃mportOntology璁虫妧閿涘奔绗撳▔銊ょ艾閺囧瓨鏌婇崷鐑樻珯閿涘牆褰查弽瑙勫祦鐎圭偤闂団偓濮瑰倽鐨熼弫杈剧礆
+
+
+
+        try {
+
+
+
+            // 妤犲矁鐦夐弬鍥
+
+
+
+            String fileName = excelFile.getOriginalFilename();
+
+
+
+            if (fileName == null || (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls"))) {
+
+
+
+                log.error("鐎电厧鍙嗘径瑙﹂敍灞肩矌顖涘瘮Excel閺傚洣");
+
+
+
+                return false;
+
+
+
+            }
+
+
+
+            if (excelFile.isEmpty()) {
+
+
+
+                return false;
+
+
+
+            }
+
+
+
+
+
+
+
+            // 閺屻儵銆嶉惄顔芥Ц閸氾箑鐡ㄩ崷?
+
+
+
+            if (!checkNameExists(projectName, null)) {
+
+
+
+                log.error("妞ゅ湱娲癧{}]娑撳秴鐡ㄩ崷顭掔礉閺冪姵纭堕弴瀛樻煀", projectName);
+
+
+
+                return false;
+
+
+
+            }
+
+
+
+
+
+
+
+            // 鐟欙絾鐎紼xcel楠炶埖娲块弬绱欓柅鏄忕帆閸欏倽鈧琲mportOntology閻ㄥ嫭娲块弬浼村劥閸掑棴
+
+
+
+            InputStream inputStream = excelFile.getInputStream();
+
+
+
+            Workbook workbook = WorkbookFactory.create(inputStream);
+
+
+
+            // ... 鐟欙絾鐎介柅鏄忕帆 ...
+
+
+
+
+
+
+
+            return true;
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("鐎电厧鍙嗛弴瀛樻煀閺堫兛缍嬫径", e);
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閹窱D鐎电厧閺堫兛缍嬫稉Excel
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public void exportById(Long id, HttpServletResponse response) throws IOException {
+
+
+
+        Ontology ontology = baseMapper.selectById(id);
+
+
+
+        if (ontology == null) {
+
+
+
+            throw new RuntimeException("閺堫兛缍嬫稉宥呯摠?);
+
+
+
+        }
+
+
+
+        List<Ontology> list = Collections.singletonList(ontology);
+
+
+
+        // 鐎电厧閺傚洣娆㈤崥宥嗙壐蹇ョ窗閺堫兛缍媉妞ゅ湱娲伴崥_閻楀牊婀伴崣?xlsx
+
+
+
+        exportExcel(list, response, "閺堫兛缍媉" + ontology.getProjectName() + "_" + ontology.getVersionNumber());
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 鐎电厧閹碘偓閺堢秼閸撳秶澧楅張顒佹拱娴ｆ挷璐烢xcel
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public void exportAll(HttpServletResponse response) throws IOException {
+
+
+
+        List<Ontology> list = baseMapper.selectList(new LambdaQueryWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getVersionStatus, 1)  // 娴犲懎顕遍崙鍝勭秼閸撳秶澧楅張?
+
+
+
+                .orderByDesc(Ontology::getCreateTime));
+
+
+
+        exportExcel(list, response, "閹碘偓閺堢秼閸撳秶澧楅張顒佹拱?);
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 姘辨暏Excel鐎电厧閺傜《
+
+
+
+     * @param list 閺堫兛缍嬮崚妤
+
+
+
+     * @param response HTTP閸濆秴
+
+
+
+     * @param fileName 閺傚洣娆㈤崥宥忕礄娑撳秴鎯堥崥搴ｇ磻?
+
+
+
+     */
+
+
+
+    private void exportExcel(List<Ontology> list, HttpServletResponse response, String fileName) throws IOException {
+
+
+
+        // 鐠佸墽鐤嗛崫宥呯安婢惰揪绱濋崨濠勭叀濞村繗顫嶉崳銊ょ瑓鏉炶姤鏋冩禒?
+
+
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+
+
+        response.setHeader("Content-Disposition", "attachment;filename=" +
+
+
+
+                URLEncoder.encode(fileName + ".xlsx", StandardCharsets.UTF_8.name()));
+
+
+
+
+
+
+
+        // 閸掓稑缂揈xcel楠炶泛鍟撻崗銉︽殶?
+
+
+
+        try (Workbook workbook = new XSSFWorkbook();  // 閼奉亜濮╅崗鎶芥４鐠у嫭
+
+
+
+             OutputStream os = response.getOutputStream()) {
+
+
+
+
+
+
+
+            Sheet sheet = workbook.createSheet("閺堫兛缍嬫穱鈩冧紖");
+
+
+
+
+
+
+
+            // 閸掓稑缂撶悰銊ャ仈
+
+
+
+            String[] headers = {"ID", "妞ゅ湱娲伴崥宥", "閸掓稑缂撴禍?, "閻楀牊婀伴崣?, "閸涜棄鎮曠粚妫縐RI", "閸掓稑缂撻弮鍫曟？", "閻楀牊婀伴悩鑸碘偓?};
+
+
+
+            Row headerRow = sheet.createRow(0);
+
+
+
+            for (int i = 0; i < headers.length; i++) {
+
+
+
+                Cell cell = headerRow.createCell(i);
+
+
+
+                cell.setCellValue(headers[i]);
+
+
+
+            }
+
+
+
+
+
+
+
+            // 婵夘偄鍘栭弫鐗堝祦
+
+
+
+            for (int i = 0; i < list.size(); i++) {
+
+
+
+                Ontology ontology = list.get(i);
+
+
+
+                Row row = sheet.createRow(i + 1);  // 娴犲海1鐞涘苯绱戞慨瀣剁礄0閺勵垵銆冩径杈剧礆
+
+
+
+
+
+
+
+                row.createCell(0).setCellValue(ontology.getId() != null ? ontology.getId().toString() : "");
+
+
+
+                row.createCell(1).setCellValue(ontology.getProjectName());
+
+
+
+                row.createCell(2).setCellValue(ontology.getCreator());
+
+
+
+                row.createCell(3).setCellValue(ontology.getVersionNumber());
+
+
+
+                row.createCell(4).setCellValue(ontology.getNamespaceUri());
+
+
+
+                // 閺嶇厧绱￠崠鏍ㄩ梻?
+
+
+
+                row.createCell(5).setCellValue(ontology.getCreateTime() != null ?
+
+
+
+                        new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(ontology.getCreateTime()) : "");
+
+
+
+                row.createCell(6).setCellValue(ontology.getVersionStatus() == 1 ? "瑜版挸澧犻悧鍫熸拱" : "閸樺棗褰堕悧鍫熸拱");
+
+
+
+            }
+
+
+
+
+
+
+
+            workbook.write(os);  // 閸愭瑥鍙嗛崫宥呯安?
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閻㈢喐鍨氶弬澧楅張褰块敍鍫㈢暆閸楁洟鎺戭杻鏄忕帆?.0 -> 1.1?.9 -> 2.0?
+
+
+
+     */
+
+
+
+    private String generateNewVersion(String currentVersion) {
+
+
+
+        try {
+
+
+
+            String[] parts = currentVersion.split("\\.");
+
+
+
+            if (parts.length == 2) {
+
+
+
+                int major = Integer.parseInt(parts[0]);
+
+
+
+                int minor = Integer.parseInt(parts[1]);
+
+
+
+                minor++;
+
+
+
+                if (minor >= 10) {  //  minor娴ｅ秵10?
+
+
+
+                    minor = 0;
+
+
+
+                    major++;
+
+
+
+                }
+
+
+
+                return major + "." + minor;
+
+
+
+            }
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("閻楀牊婀伴崣袙閺嬫劕銇戠拹绱濇担璺ㄦ暏姒涱吇鎺戭杻", e);
+
+
+
+        }
+
+
+
+        return currentVersion + ".1";  // 鐟欙絾鐎芥径瑙﹂弮鍓佹畱闂勫秶楠囨径
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閹靛З閸掑洦宕查悧鍫熸拱閿涘牆鐨㈤幐鍥х暰閸樺棗褰堕悧鍫熸拱鐠佸彞璐熻ぐ鎾冲犻悧鍫熸拱?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public boolean switchVersion(Long targetVersionId) {
+
+
+
+        // 鏄忕帆娑搑ollbackVersion娑撯偓閼疯揪绱濋崣顖滄纯閹恒儱顦查悽?
+
+
+
+        return rollbackVersion(targetVersionId);
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閹靛綊鍣虹亸鍡涢惄顔介張澶岄張顒佺垼鐠佽礋閸樺棗褰堕悧鍫熸拱
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public boolean markAllAsHistory(String projectName) {
+
+
+
+        int rows = baseMapper.update(null, new LambdaUpdateWrapper<Ontology>()
+
+
+
+                .eq(Ontology::getProjectName, projectName)
+
+
+
+                .set(Ontology::getVersionStatus, 0));
+
+
+
+        return rows > 0;
+
+
+
+    }
+
+
+
+
+
+
+
+    // ==================== 閸ョ偓鏆熼幑顔肩氨閻╁彠閺傜増鏌熷▔鏇炵杽?====================
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閸掓稑缂撻張顑跨秼楠炴儼袙閺嬫劒绗傛导鐘垫畱RDF/OWL閺傚洣娆㈤崚鏉挎禈閺佺増宓佹惔?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional
+
+
+
+    public Ontology createOntologyWithFile(String ontologyName, String creatorName, String version,
+
+
+
+                                           String namespaceUri, String fileFormat, MultipartFile file) {
+
+
+
+        try {
+
+
+
+            // 1. 閺屻儱鎮曠粔鐗堟Ц閸氾箑鍑℃ê
+
+
+
+            if (checkNameExists(ontologyName, null)) {
+
+
+
+                throw new RuntimeException("閺堫兛缍嬮崥宥囆炴彃鐡ㄩ崷顭掔窗" + ontologyName);
+
+
+
+            }
+
+
+
+
+
+
+
+            // 2. 閸掓稑缂撻張顑跨秼閸忓啯鏆熼幑?
+
+
+
+            Ontology ontology = new Ontology();
+
+
+
+            ontology.setProjectName(ontologyName);
+
+
+
+            ontology.setCreator(creatorName);
+
+
+
+            ontology.setVersionNumber(version != null ? version : "1.0");
+
+
+
+            ontology.setNamespaceUri(namespaceUri);
+
+
+
+            ontology.setVersionStatus(1);
+
+
+
+            ontology.setCreateTime(new Date());
+
+
+
+            ontology.setModifyTime(new Date());
+
+
+
+
+
+
+
+            // 3. 娣囨繂鐡ㄩ崚MySQL
+
+
+
+            boolean saved = save(ontology);
+
+
+
+            if (!saved) {
+
+
+
+                throw new RuntimeException("娣囨繂鐡ㄩ張顑跨秼閸忓啯鏆熼幑顔笺亼?);
+
+
+
+            }
+
+
+
+
+
+
+
+            // 4. 婵″倹鐏夐張澶嬫瀮娴犵礉鐟欙絾鐎介獮鏈电箽鐎涙ê鍩岄崶鏆熼幑顔肩氨
+
+
+
+            if (file != null && !file.isEmpty()) {
+
+
+
+                RdfFileFormat format = fileFormat != null 
+
+
+
+                    ? RdfFileFormat.fromCode(fileFormat) 
+
+
+
+                    : RdfFileFormat.fromFilename(file.getOriginalFilename());
+
+
+
+                
+
+
+
+                String namedGraphUri = graphRepository.buildNamedGraphUri(ontologyName, ontology.getVersionNumber());
+
+
+
+                
+
+
+
+                try (InputStream is = file.getInputStream()) {
+
+
+
+                    graphRepository.loadRdfToNamedGraph(namedGraphUri, is, format);
+
+
+
+                    log.info("閺堫兛缍嬮弬鍥﹁尪袙閺嬫劕鍩岄崶鏆熼幑顔肩氨: {}, format: {}, triples: {}", 
+
+
+
+                        namedGraphUri, format.getCode(), graphRepository.getTripleCount(namedGraphUri));
+
+
+
+                }
+
+
+
+            } else {
+
+
+
+                // 閸掓稑缂撶粚鍝勬禈
+
+
+
+                String namedGraphUri = graphRepository.buildNamedGraphUri(ontologyName, ontology.getVersionNumber());
+
+
+
+                graphRepository.createNamedGraph(namedGraphUri);
+
+
+
+                log.info("閸掓稑缂撶粚鍝勬嚒閸氬秴: {}", namedGraphUri);
+
+
+
+            }
+
+
+
+
+
+
+
+            return ontology;
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("閸掓稑缂撻張顑跨秼婢惰精", e);
+
+
+
+            throw new RuntimeException("閸掓稑缂撻張顑跨秼婢惰精瑙﹂敍? + e.getMessage(), e);
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閺屻儲婀版担鎾虫倳缁夋澘閸ョ偓鏆熼幑顔肩氨娑擃厽妲搁崥鐡ㄩ崷?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public CheckNameResult checkOntologyNameInGraph(String ontologyName) {
+
+
+
+        String prefix = graphRepository.buildNamedGraphUri(ontologyName, "");
+
+
+
+        List<String> namedGraphs = graphRepository.listNamedGraphsByPrefix(prefix);
+
+
+
+        
+
+
+
+        // 閺屻儴顕桵ySQL閼惧嘲褰囪ぐ鎾抽悧鍫熸拱
+
+
+
+        Ontology current = getCurrentVersion(ontologyName);
+
+
+
+        
+
+
+
+        return CheckNameResult.builder()
+
+
+
+                .exists(!namedGraphs.isEmpty() || current != null)
+
+
+
+                .namedGraphs(namedGraphs)
+
+
+
+                .currentVersion(current != null ? current.getVersionNumber() : null)
+
+
+
+                .build();
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閺嶅祦閺堫兛缍嬮崥宥囆為懢宄板絿閻楀牊婀伴崢鍡楀蕉
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public List<VersionInfo> getOntologyVersionHistory(String ontologyName) {
+
+
+
+        List<Ontology> versions = getVersionsByProjectName(ontologyName);
+
+
+
+        return versions.stream()
+
+
+
+                .sorted((v1, v2) -> v2.getCreateTime().compareTo(v1.getCreateTime())) // 閹搁梻鏉戔偓鎺戠碍
+
+
+
+                .map(o -> VersionInfo.builder()
+
+
+
+                        .id(o.getId())
+
+
+
+                        .version(o.getVersionNumber())
+
+
+
+                        .creator(o.getCreator())
+
+
+
+                        .status(o.getVersionStatus())
+
+
+
+                        .namespaceUri(o.getNamespaceUri())
+
+
+
+                        .parentId(o.getParentId())
+
+
+
+                        .createTime(o.getCreateTime())
+
+
+
+                        .updateTime(o.getModifyTime())
+
+
+
+                        .build())
+
+
+
+                .collect(Collectors.toList());
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 鐏忓棙婀版担鎾愁嚤閸忋儱娴橀弫鐗堝祦鎼存搫绱欓崗銉ョ氨閹垮秳缍旈敍?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional
+
+
+
+    public boolean importOntologyToHouse(ImportToHouseRequest request) {
+
+
+
+        try {
+
+
+
+            // 1. 閺屻儴顕楀┃婀版担?
+
+
+
+            Ontology source = baseMapper.selectById(request.getSourceOntologyId());
+
+
+
+            if (source == null) {
+
+
+
+                throw new RuntimeException("濠ф劖婀版担鎾茬瑝鐎涙ê");
+
+
+
+            }
+
+
+
+
+
+
+
+            String ontologyName = source.getProjectName();
+
+
+
+            String newVersion = request.getNewVersion();
+
+
+
+
+
+
+
+            // 2. 閺屻儳澧楅張褰块弰顖氭儊瀹告彃鐡ㄩ崷?
+
+
+
+            if (checkVersionExists(ontologyName, newVersion)) {
+
+
+
+                throw new RuntimeException("閻楀牊婀伴崣?" + newVersion + " 瀹告彃鐡ㄩ崷?);
+
+
+
+            }
+
+
+
+
+
+
+
+            // 3. 鐏忓棗缍嬮崜宥囬張顒佺垼鐠佽礋閸樺棗褰堕悧鍫熸拱
+
+
+
+            baseMapper.update(null, new LambdaUpdateWrapper<Ontology>()
+
+
+
+                    .eq(Ontology::getProjectName, ontologyName)
+
+
+
+                    .eq(Ontology::getVersionStatus, 1)
+
+
+
+                    .set(Ontology::getVersionStatus, 0));
+
+
+
+
+
+
+
+            // 4. 閸掓稑缂撻弬澧楅張顒冾唶?
+
+
+
+            Ontology newVersionEntity = new Ontology();
+
+
+
+            BeanUtils.copyProperties(source, newVersionEntity);
+
+
+
+            newVersionEntity.setId(null);
+
+
+
+            newVersionEntity.setVersionNumber(newVersion);
+
+
+
+            newVersionEntity.setVersionStatus(1);
+
+
+
+            newVersionEntity.setParentId(source.getId());
+
+
+
+            newVersionEntity.setCreateTime(new Date());
+
+
+
+            newVersionEntity.setModifyTime(new Date());
+
+
+
+            baseMapper.insert(newVersionEntity);
+
+
+
+
+
+
+
+            // 5. 婢跺嫮鎮婇崶鏆熼幑顔肩氨
+
+
+
+            String sourceGraphUri = graphRepository.buildNamedGraphUri(ontologyName, source.getVersionNumber());
+
+
+
+            String targetGraphUri = graphRepository.buildNamedGraphUri(ontologyName, newVersion);
+
+
+
+
+
+
+
+            if (graphRepository.namedGraphExists(sourceGraphUri)) {
+
+
+
+                // 婢跺秴鍩楅崶鏆熼幑顔煎煂閺傛壆澧楅張?
+
+
+
+                graphRepository.copyNamedGraph(sourceGraphUri, targetGraphUri);
+
+
+
+                log.info("瀹告彃顦查崚璺烘禈閺佺増宓佹禒?{} ?{}", sourceGraphUri, targetGraphUri);
+
+
+
+            } else {
+
+
+
+                // 濠ф劕娴樻稉宥呯摠閸︻煉绱濋崚娑樼紦閸栧懎鎯堥崺铏诡攨缂佹挻閻ㄥ嫭婀版担?
+
+
+
+                graphRepository.createNamedGraph(targetGraphUri);
+
+
+
+                // 濞ｆ稉娑擃亪鐠併倗娈戦弽 Thing
+
+
+
+                ClassInfo thingClass = ClassInfo.builder()
+
+
+
+                        .name("Thing")
+
+
+
+                        .description("Root class of all classes")
+
+
+
+                        .build();
+
+
+
+                try {
+
+
+
+                    graphRepository.createClass(targetGraphUri, thingClass);
+
+
+
+                    log.info("濠ф劕鎳￠崥宥呮禈娑撳秴鐡ㄩ崷顭掔礉閸掓稑缂撻崺铏诡攨閺堫兛缍嬬紒鎾: {}", targetGraphUri);
+
+
+
+                } catch (Exception e) {
+
+
+
+                    log.warn("閸掓稑缂擃吇閺嶅湱婢惰精瑙﹂敍鍫濆讲閼宠棄鍑℃ê? {}", e.getMessage());
+
+
+
+                }
+
+
+
+            }
+
+
+
+
+
+
+
+            return true;
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("閸忋儱绨辨径", e);
+
+
+
+            throw new RuntimeException("閸忋儱绨辨径瑙﹂敍? + e.getMessage(), e);
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閹搁張褰块崶鐐寸泊閺堫兛缍嬮悧鍫熸拱
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    @Transactional
+
+
+
+    public boolean rollbackOntologyByVersion(RollbackVersionRequest request) {
+
+
+
+        try {
+
+
+
+            // 1. 閺屻儴顕楀┃婀版担鎿勭礄瑜版挸澧犻悧鍫熸拱?
+
+
+
+            Ontology source = baseMapper.selectById(request.getSourceOntologyId());
+
+
+
+            if (source == null) {
+
+
+
+                throw new RuntimeException("濠ф劖婀版担鎾茬瑝鐎涙ê");
+
+
+
+            }
+
+
+
+
+
+
+
+            String ontologyName = source.getProjectName();
+
+
+
+            String targetVersion = request.getNewVersion();
+
+
+
+
+
+
+
+            // 2. 閺屻儴顕楅惄顔界垼閸樺棗褰堕悧鍫熸拱
+
+
+
+            Ontology target = baseMapper.selectOne(new LambdaQueryWrapper<Ontology>()
+
+
+
+                    .eq(Ontology::getProjectName, ontologyName)
+
+
+
+                    .eq(Ontology::getVersionNumber, targetVersion)
+
+
+
+                    .last("limit 1"));
+
+
+
+            
+
+
+
+            if (target == null) {
+
+
+
+                throw new RuntimeException("閻╊喗鐖ｉ悧鍫熸拱 " + targetVersion + " 娑撳秴鐡ㄩ崷?);
+
+
+
+            }
+
+
+
+
+
+
+
+            // 3. 鐏忓棙澧嶉張澶岄張顒佺垼鐠佽礋閸樺棗
+
+
+
+            baseMapper.update(null, new LambdaUpdateWrapper<Ontology>()
+
+
+
+                    .eq(Ontology::getProjectName, ontologyName)
+
+
+
+                    .eq(Ontology::getVersionStatus, 1)
+
+
+
+                    .set(Ontology::getVersionStatus, 0));
+
+
+
+
+
+
+
+            // 4. 鐏忓棛娲伴弽鍥╅張顒佺垼鐠佽礋瑜版挸澧犻悧鍫熸拱
+
+
+
+            target.setVersionStatus(1);
+
+
+
+            target.setModifyTime(new Date());
+
+
+
+            baseMapper.updateById(target);
+
+
+
+
+
+
+
+            // 5. 閸ョ偓鏆熼幑顔肩氨閸ョ偞绮撮敍顦查崚璺哄坊閸欒尙澧楅張顒佹殶閹诡喖鍩岃ぐ鎾抽悧鍫熸拱
+
+
+
+            String targetGraphUri = graphRepository.buildNamedGraphUri(ontologyName, targetVersion);
+
+
+
+            String currentGraphUri = graphRepository.buildNamedGraphUri(ontologyName, targetVersion + "_current");
+
+
+
+
+
+
+
+            if (graphRepository.namedGraphExists(targetGraphUri)) {
+
+
+
+                graphRepository.copyNamedGraph(targetGraphUri, currentGraphUri);
+
+
+
+                log.info("閸ョ偓鏆熼幑顔肩氨閸ョ偞绮村本: {} -> {}", targetGraphUri, currentGraphUri);
+
+
+
+            }
+
+
+
+
+
+
+
+            return true;
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("閸ョ偞绮存径", e);
+
+
+
+            throw new RuntimeException("閸ョ偞绮存径瑙﹂敍? + e.getMessage(), e);
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 鐎电厧閺堫兛缍嬮弬鍥﹂敍OWL/RDF/TTL/NT閺嶇厧绱￠敍?
+
+
+
+     */
+
+
+
+    @Override
+
+
+
+    public void exportOntologyFile(Long id, RdfFileFormat format, HttpServletResponse response) throws IOException {
+
+
+
+        log.info("鐎电厧閺堫兛缍嬮弬鍥, id: {}, format: {}", id, format.getCode());
+
+
+
+        Ontology ontology = baseMapper.selectById(id);
+
+
+
+        if (ontology == null) {
+
+
+
+            log.error("鐎电厧婢惰精瑙﹂敍灞炬拱娴ｆ挷绗夋ê閿沬d: {}", id);
+
+
+
+            response.sendError(HttpServletResponse.SC_NOT_FOUND, "閺堫兛缍嬫稉宥呯摠?);
+
+
+
+            return;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+        log.info("閸涜棄鎮曢崶URI: {}", namedGraphUri);
+
+
+
+
+
+
+
+        // 鐠佸墽鐤嗛崫宥呯安?
+
+
+
+        String filename = ontology.getProjectName() + "_" + ontology.getVersionNumber() + "." + format.getExtension();
+
+
+
+        response.setContentType(format.getMimeType());
+
+
+
+        response.setHeader("Content-Disposition", "attachment;filename=" + 
+
+
+
+                URLEncoder.encode(filename, StandardCharsets.UTF_8.name()));
+
+
+
+
+
+
+
+        // JSON閺嶇厧绱￠悧瑙勭暕婢跺嫮
+
+
+
+        if (format == RdfFileFormat.JSON) {
+
+
+
+            exportAsJson(namedGraphUri, ontology, response);
+
+
+
+            return;
+
+
+
+        }
+
+
+
+
+
+
+
+        if (!graphRepository.namedGraphExists(namedGraphUri)) {
+
+
+
+            log.warn("閸ョ偓鏆熼幑顔肩氨娑擃厺绗夋ê鐠囥儲婀版担鎿勭礉閸掓稑缂撶粻閸桼DF鐎电厧: {}", namedGraphUri);
+
+
+
+            // 閸ュ彞绗夋ê閿涘苯鍨卞搫娴滃骸鍘撻弫鐗堝祦閻ㄥ嫮鐣濋崡RDF
+
+
+
+            createSimpleRdfExport(ontology, format, response);
+
+
+
+            return;
+
+
+
+        }
+
+
+
+
+
+
+
+        // 鐎电厧閸ョ偓鏆熼幑?
+
+
+
+        try (OutputStream os = response.getOutputStream()) {
+
+
+
+            graphRepository.exportNamedGraph(namedGraphUri, os, format);
+
+
+
+            log.info("鐎电厧閹存劕: {}", filename);
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("鐎电厧閸ョ偓鏆熼幑顔笺亼?, e);
+
+
+
+            throw e;
+
+
+
+        }
+
+
+
+    }
+
+
+
+    
+
+
+
+    /**
+
+
+
+     * 鐎电厧娑揓SON閺嶇厧
+
+
+
+     */
+
+
+
+    private void exportAsJson(String namedGraphUri, Ontology ontology, HttpServletResponse response) throws IOException {
+
+
+
+        Map<String, Object> jsonData = new HashMap<>();
+
+
+
+        jsonData.put("ontologyId", ontology.getId());
+
+
+
+        jsonData.put("projectName", ontology.getProjectName());
+
+
+
+        jsonData.put("version", ontology.getVersionNumber());
+
+
+
+        jsonData.put("namespaceUri", ontology.getNamespaceUri());
+
+
+
+        jsonData.put("exportTime", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
+
+
+
+        
+
+
+
+        // 閼惧嘲褰囬崶鎹愭皑閺佺増
+
+
+
+        if (graphRepository.namedGraphExists(namedGraphUri)) {
+
+
+
+            OntologyVisualizationDTO vizData = graphRepository.getVisualizationData(namedGraphUri);
+
+
+
+            jsonData.put("nodes", vizData.getNodes());
+
+
+
+            jsonData.put("edges", vizData.getEdges());
+
+
+
+            jsonData.put("statistics", vizData.getStatistics());
+
+
+
+        } else {
+
+
+
+            jsonData.put("nodes", new ArrayList<>());
+
+
+
+            jsonData.put("edges", new ArrayList<>());
+
+
+
+        }
+
+
+
+        
+
+
+
+        // 閸愭瑥鍙嗛崫宥呯安
+
+
+
+        try (OutputStream os = response.getOutputStream();
+
+
+
+             PrintWriter writer = new PrintWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8))) {
+
+
+
+            ObjectMapper mapper = new ObjectMapper();
+
+
+
+            writer.write(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonData));
+
+
+
+            writer.flush();
+
+
+
+            log.info("JSON鐎电厧閹存劕");
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    /**
+
+
+
+     * 閸掓稑缂撻崺杞扮艾閸忓啯鏆熼幑顔炬畱缁犫偓閸桼DF鐎电厧閿涘牆缍嬮崶鏆熼幑顔肩氨娑撹櫣鈹栭弮鏈靛▏閻㈩煉
+
+
+
+     */
+
+
+
+    private void createSimpleRdfExport(Ontology ontology, RdfFileFormat format, HttpServletResponse response) throws IOException {
+
+
+
+        String filename = ontology.getProjectName() + "_" + ontology.getVersionNumber() + "." + format.getExtension();
+
+
+
+        response.setContentType(format.getMimeType());
+
+
+
+        response.setHeader("Content-Disposition", "attachment;filename=" + 
+
+
+
+                URLEncoder.encode(filename, StandardCharsets.UTF_8.name()));
+
+
+
+
+
+
+
+        // 閸掓稑缂撶粻閸楁洜娈慠DF鈥
+
+
+
+        Model model = ModelFactory.createDefaultModel();
+
+
+
+        String ns = ontology.getNamespaceUri() != null ? ontology.getNamespaceUri() : 
+
+
+
+                "http://example.org/ontology/";
+
+
+
+        
+
+
+
+        Resource ontologyResource = model.createResource(ns + ontology.getProjectName())
+
+
+
+                .addProperty(RDF.type, model.createResource("http://www.w3.org/2002/07/owl#Ontology"))
+
+
+
+                .addProperty(RDFS.label, ontology.getProjectName())
+
+
+
+                .addProperty(model.createProperty(ns + "version"), ontology.getVersionNumber())
+
+
+
+                .addProperty(model.createProperty(ns + "creator"), ontology.getCreator());
+
+
+
+
+
+
+
+        try (OutputStream os = response.getOutputStream()) {
+
+
+
+            model.write(os, format.getJenaLang().getName());
+
+
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+    // ==================== 閺堫兛缍嬬拠锔藉剰閺屻儴顕楃偟 ====================
+
+
+
+
+
+
+
+    @Override
+
+
+
+    public OntologyStats getOntologyStats(Long id) {
+
+
+
+        Ontology ontology = baseMapper.selectById(id);
+
+
+
+        if (ontology == null) {
+
+
+
+            log.warn("getOntologyStats: ontology not found, id={}", id);
+
+
+
+            return OntologyStats.builder()
+
+
+
+                    .classCount(0)
+
+
+
+                    .individualCount(0)
+
+
+
+                    .propertyCount(0)
+
+
+
+                    .tripleCount(0)
+
+
+
+                    .build();
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+        log.info("getOntologyStats: graphUri={}", namedGraphUri);
+
+
+
+
+
+
+
+        // 閼惧嘲褰囬崥缂佺喕顓搁弫鐗堝祦
+
+
+
+        long tripleCount = graphRepository.getTripleCount(namedGraphUri);
+
+
+
+        List<ClassInfo> classes = graphRepository.getClasses(namedGraphUri);
+
+
+
+        List<PropertyInfo> properties = graphRepository.getProperties(namedGraphUri, null);
+
+
+
+        List<IndividualInfo> individuals = graphRepository.getIndividuals(namedGraphUri, null);
+
+
+
+        
+
+
+
+        log.info("getOntologyStats: classes={}, individuals={}, properties={}, triples={}", 
+
+
+
+                classes.size(), individuals.size(), properties.size(), tripleCount);
+
+
+
+        
+
+
+
+        // 鐎圭偘绶ラ幀缁樻殶
+
+
+
+        long individualCount = individuals.size();
+
+
+
+
+
+
+
+        return OntologyStats.builder()
+
+
+
+                .classCount(classes.size())
+
+
+
+                .individualCount(individualCount)
+
+
+
+                .propertyCount(properties.size())
+
+
+
+                .tripleCount(tripleCount)
+
+
+
+                .build();
+
+
+
+    }
+
+
+
+
+
+
+
+    @Override
+
+
+
+    public List<ClassInfo> getOntologyClasses(Long id, String keyword) {
+
+
+
+        Ontology ontology = baseMapper.selectById(id);
+
+
+
+        if (ontology == null) {
+
+
+
+            return new ArrayList<>();
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        List<ClassInfo> classes = graphRepository.getClasses(namedGraphUri);
+
+
+
+        
+
+
+
+        // 閺嶅祦閸忔娊鐠囧秷绻?
+
+
+
+        if (keyword != null && !keyword.trim().isEmpty()) {
+
+
+
+            String lowerKeyword = keyword.toLowerCase();
+
+
+
+            classes = classes.stream()
+
+
+
+                    .filter(cls -> {
+
+
+
+                        String name = cls.getName() != null ? cls.getName().toLowerCase() : "";
+
+
+
+                        String description = cls.getDescription() != null ? cls.getDescription().toLowerCase() : "";
+
+
+
+                        return name.contains(lowerKeyword) || description.contains(lowerKeyword);
+
+
+
+                    })
+
+
+
+                    .collect(Collectors.toList());
+
+
+
+        }
+
+
+
+        
+
+
+
+        // 鐠佸墽鐤嗛悥鍓侀崥宥囆為敍鍫㈢暆閸栨牕顦╅悶鍡绱濈偤鎼存棁顕氭禒搴℃禈閺佺増宓佹惔鎾寸叀鐠囶澁
+
+
+
+        for (ClassInfo cls : classes) {
+
+
+
+            if (cls.getParentId() == null || cls.getParentId().isEmpty()) {
+
+
+
+                // 鐏忔繆閺屻儲澹橀悥鍓侀敍rdfs:subClassOf?
+
+
+
+                cls.setParentName("Thing");
+
+
+
+            }
+
+
+
+        }
+
+
+
+        
+
+
+
+        return classes;
+
+
+
+    }
+
+
+
+
+
+
+
+    @Override
+
+
+
+    public List<IndividualInfo> getOntologyIndividuals(Long id, String classUri, String keyword) {
+
+
+
+        Ontology ontology = baseMapper.selectById(id);
+
+
+
+        if (ontology == null) {
+
+
+
+            return new ArrayList<>();
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        List<IndividualInfo> individuals = graphRepository.getIndividuals(namedGraphUri, classUri);
+
+
+
+        
+
+
+
+        // 閹稿彠闁款喛鐦濇潻鍥ㄦ姢
+
+
+
+        if (keyword != null && !keyword.trim().isEmpty()) {
+
+
+
+            String lowerKeyword = keyword.toLowerCase();
+
+
+
+            individuals = individuals.stream()
+
+
+
+                .filter(ind -> {
+
+
+
+                    String name = ind.getName() != null ? ind.getName().toLowerCase() : "";
+
+
+
+                    String desc = ind.getDescription() != null ? ind.getDescription().toLowerCase() : "";
+
+
+
+                    return name.contains(lowerKeyword) || desc.contains(lowerKeyword);
+
+
+
+                })
+
+
+
+                .collect(Collectors.toList());
+
+
+
+        }
+
+
+
+        
+
+
+
+        return individuals;
+
+
+
+    }
+
+
+
+
+
+
+
+    @Override
+
+
+
+    public List<PropertyInfo> getOntologyProperties(Long id, String propertyType, String keyword) {
+
+
+
+        Ontology ontology = baseMapper.selectById(id);
+
+
+
+        if (ontology == null) {
+
+
+
+            return new ArrayList<>();
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        List<PropertyInfo> properties = graphRepository.getProperties(namedGraphUri, propertyType);
+
+
+
+        
+
+
+
+        // 閹稿彠闁款喛鐦濇潻鍥ㄦ姢
+
+
+
+        if (keyword != null && !keyword.trim().isEmpty()) {
+
+
+
+            String lowerKeyword = keyword.toLowerCase();
+
+
+
+            properties = properties.stream()
+
+
+
+                .filter(prop -> {
+
+
+
+                    String name = prop.getName() != null ? prop.getName().toLowerCase() : "";
+
+
+
+                    String desc = prop.getDescription() != null ? prop.getDescription().toLowerCase() : "";
+
+
+
+                    return name.contains(lowerKeyword) || desc.contains(lowerKeyword);
+
+
+
+                })
+
+
+
+                .collect(Collectors.toList());
+
+
+
+        }
+
+
+
+        
+
+
+
+        return properties;
+
+
+
+    }
+
+
+
+    
+
+
+
+    // ==================== 鑽ゎ吀閻濩RUD鐎圭偟 ====================
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public String createOntologyClass(Long ontologyId, ClassInfo classInfo) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            throw new RuntimeException("閺堫兛缍嬫稉宥呯摠?);
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.createClass(namedGraphUri, classInfo);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public boolean updateOntologyClass(Long ontologyId, String classUri, ClassInfo classInfo) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.updateClass(namedGraphUri, classUri, classInfo);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public boolean deleteOntologyClass(Long ontologyId, String classUri) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.deleteClass(namedGraphUri, classUri);
+
+
+
+    }
+
+
+
+    
+
+
+
+    // ==================== 鐎圭偘绶ョ粻锛勬倞CRUD鐎圭偟 ====================
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public String createOntologyIndividual(Long ontologyId, IndividualInfo individualInfo) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            throw new RuntimeException("閺堫兛缍嬫稉宥呯摠?);
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.createIndividual(namedGraphUri, individualInfo);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public boolean updateOntologyIndividual(Long ontologyId, String individualUri, IndividualInfo individualInfo) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.updateIndividual(namedGraphUri, individualUri, individualInfo);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public boolean deleteOntologyIndividual(Long ontologyId, String individualUri) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.deleteIndividual(namedGraphUri, individualUri);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public IndividualRelations getIndividualRelations(Long ontologyId, String individualUri) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            log.warn("getIndividualRelations: ontology not found, id={}", ontologyId);
+
+
+
+            return new IndividualRelations();
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+        
+
+
+
+        log.info("getIndividualRelations: graphUri={}, individualUri={}", namedGraphUri, individualUri);
+
+
+
+
+
+
+
+        return graphRepository.getIndividualRelations(namedGraphUri, individualUri);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public String createOntologyProperty(Long ontologyId, com.example.tdproject.ontology.dto.PropertyCreateRequest request) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            throw new IllegalArgumentException("Ontology not found: " + ontologyId);
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.createProperty(namedGraphUri, request);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public boolean updateOntologyProperty(Long ontologyId, String propertyUri, 
+
+
+
+                                          com.example.tdproject.ontology.dto.PropertyCreateRequest request) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.updateProperty(namedGraphUri, propertyUri, request);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public boolean deleteOntologyProperty(Long ontologyId, String propertyUri) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            return false;
+
+
+
+        }
+
+
+
+
+
+
+
+        String namedGraphUri = graphRepository.buildNamedGraphUri(
+
+
+
+                ontology.getProjectName(), ontology.getVersionNumber());
+
+
+
+
+
+
+
+        return graphRepository.deleteProperty(namedGraphUri, propertyUri);
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    public OntologyVisualizationDTO getOntologyVisualization(Long ontologyId) {
+
+
+
+        Ontology ontology = baseMapper.selectById(ontologyId);
+
+
+
+        if (ontology == null) {
+
+
+
+            log.warn("getOntologyVisualization: ontology not found, id={}", ontologyId);
+
+
+
+            return OntologyVisualizationDTO.builder()
+
+
+
+                    .nodes(new ArrayList<>())
+
+
+
+                    .edges(new ArrayList<>())
+
+
+
+                    .build();
+
+
+
+        }
+
+
+
+
+
+
+
+        // 娴燤ySQL閺屻儴顕楅崶鎹愭皑閺佺増
+
+
+
+        return getVisualizationDataFromMySQL(ontologyId);
+
+
+
+    }
+
+
+
+    
+
+
+
+    /**
+
+
+
+     * 娴燤ySQL閺屻儴顕楅崣顖濐潒閸栨牗鏆熼幑?
+
+
+
+     */
+
+
+
+    private OntologyVisualizationDTO getVisualizationDataFromMySQL(Integer ontologyId) {
+
+
+
+        List<OntologyVisualizationDTO.NodeDTO> nodes = new ArrayList<>();
+
+
+
+        List<OntologyVisualizationDTO.EdgeDTO> edges = new ArrayList<>();
+
+
+
+        
+
+
+
+        // 閺屻儴顕楃猾鏄忓Ν?
+
+
+
+        List<OntologyClass> classes = ontologyClassMapper.selectByOntologyId(ontologyId);
+
+
+
+        Map<Integer, String> classIdMap = new HashMap<>();
+
+
+
+        for (OntologyClass cls : classes) {
+
+
+
+            String nodeId = "class_" + cls.getClassId();
+
+
+
+            classIdMap.put(cls.getClassId(), nodeId);
+
+
+
+            nodes.add(OntologyVisualizationDTO.NodeDTO.builder()
+
+
+
+                    .id(nodeId)
+
+
+
+                    .label(cls.getName())
+
+
+
+                    .type("class")
+
+
+
+                    .color("#1890ff")
+
+
+
+                    .size(60)
+
+
+
+                    .build());
+
+
+
+        }
+
+
+
+        
+
+
+
+        // 閺屻儴顕楃偘绶ラ懞鍌滃仯
+
+
+
+        List<OntologyIndividual> individuals = ontologyIndividualMapper.selectByOntologyId(ontologyId);
+
+
+
+        Map<Integer, String> individualIdMap = new HashMap<>();
+
+
+
+        for (OntologyIndividual ind : individuals) {
+
+
+
+            String nodeId = "ind_" + ind.getIndividualId();
+
+
+
+            individualIdMap.put(ind.getIndividualId(), nodeId);
+
+
+
+            nodes.add(OntologyVisualizationDTO.NodeDTO.builder()
+
+
+
+                    .id(nodeId)
+
+
+
+                    .label(ind.getName())
+
+
+
+                    .type("individual")
+
+
+
+                    .color("#52c41a")
+
+
+
+                    .size(40)
+
+
+
+                    .build());
+
+
+
+        }
+
+
+
+        
+
+
+
+        // 閺屻儴顕楃猾鑽ゆ埛閹靛灝鍙х化?
+
+
+
+        for (OntologyClass cls : classes) {
+
+
+
+            if (cls.getParentClassId() != null && classIdMap.containsKey(cls.getParentClassId())) {
+
+
+
+                edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
+
+
+
+                        .id("edge_sub_" + cls.getClassId())
+
+
+
+                        .source("class_" + cls.getClassId())
+
+
+
+                        .target("class_" + cls.getParentClassId())
+
+
+
+                        .label("subClassOf")
+
+
+
+                        .type("subClassOf")
+
+
+
+                        .color("#999999")
+
+
+
+                        .build());
+
+
+
+            }
+
+
+
+        }
+
+
+
+        
+
+
+
+        // 閺屻儴顕楃偘-璇插彠?
+
+
+
+        for (OntologyIndividual ind : individuals) {
+
+
+
+            List<IndividualType> types = individualTypeMapper.selectByIndividualId(ind.getIndividualId());
+
+
+
+            for (IndividualType type : types) {
+
+
+
+                if (classIdMap.containsKey(type.getClassId())) {
+
+
+
+                    edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
+
+
+
+                            .id("edge_type_" + ind.getIndividualId())
+
+
+
+                            .source("ind_" + ind.getIndividualId())
+
+
+
+                            .target("class_" + type.getClassId())
+
+
+
+                            .label("instanceOf")
+
+
+
+                            .type("instanceOf")
+
+
+
+                            .color("#52c41a")
+
+
+
+                            .build());
+
+
+
+                }
+
+
+
+            }
+
+
+
+        }
+
+
+
+        
+
+
+
+        // 閺屻儴顕楃偘绶ラ梻鏉戝彠?
+
+
+
+        for (OntologyIndividual ind : individuals) {
+
+
+
+            List<IndividualPropertyValue> properties = 
+
+
+
+                individualPropertyValueMapper.selectByIndividualId(ind.getIndividualId());
+
+
+
+            for (IndividualPropertyValue prop : properties) {
+
+
+
+                if (prop.getObjectIndividualId() != null && 
+
+
+
+                    individualIdMap.containsKey(prop.getObjectIndividualId())) {
+
+
+
+                    edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
+
+
+
+                            .id("edge_rel_" + prop.getId())
+
+
+
+                            .source("ind_" + ind.getIndividualId())
+
+
+
+                            .target("ind_" + prop.getObjectIndividualId())
+
+
+
+                            .label("relatedTo")
+
+
+
+                            .type("objectProperty")
+
+
+
+                            .color("#fa8c16")
+
+
+
+                            .build());
+
+
+
+                }
+
+
+
+            }
+
+
+
+        }
+
+
+
+        
+
+
+
+        log.info("getVisualizationDataFromMySQL: found {} nodes, {} edges", nodes.size(), edges.size());
+
+
+
+        
+
+
+
+        return OntologyVisualizationDTO.builder()
+
+
+
+                .nodes(nodes)
+
+
+
+                .edges(edges)
+
+
+
+                .build();
+
+
+
+    }
+
+
+
+    
+
+
+
+    @Override
+
+
+
+    @Transactional(rollbackFor = Exception.class)
+
+
+
+    public GraphWarehouseResponseDTO warehouseGraph(GraphWarehouseDTO dto) {
+
+
+
+        log.info("warehouseGraph: 娴樼拫鍗炲弳鎼存挸鍩孧ySQL閿沷ntologyId={}, ontologyName={}", 
+
+
+
+                dto.getOntologyId(), dto.getOntologyName());
+
+
+
+        
+
+
+
+        try {
+
+
+
+            // 1. 閼惧嘲褰囬張顑跨秼娣団剝
+
+
+
+            Ontology ontology = baseMapper.selectById(dto.getOntologyId());
+
+
+
+            if (ontology == null) {
+
+
+
+                throw new RuntimeException("閺堫兛缍嬫稉宥呯摠閸︻煉绱漣d=" + dto.getOntologyId());
+
+
+
+            }
+
+
+
+            
+
+
+
+            // 2. 閸掓稑缂撻弬澧楅張顒傛畱閺堫兛缍嬬拋鏉跨秿
+
+
+
+            Ontology newVersion = new Ontology();
+
+
+
+            BeanUtils.copyProperties(ontology, newVersion);
+
+
+
+            newVersion.setId(null);
+
+
+
+            newVersion.setVersionNumber(dto.getVersion());
+
+
+
+            newVersion.setVersionStatus(1); // 瑜版挸澧犻悧鍫熸拱
+
+
+
+            newVersion.setCreateTime(new Date());
+
+
+
+            newVersion.setModifyTime(new Date());
+
+
+
+            
+
+
+
+            // 娣囨繂鐡ㄩ弬澧楅張?
+
+
+
+            baseMapper.insert(newVersion);
+
+
+
+            Integer newOntologyId = newVersion.getId();
+
+
+
+            
+
+
+
+            // 3. 鐏忓棙閻楀牊婀伴弽顔囨稉鍝勫坊閸欒尙澧楅張?
+
+
+
+            ontology.setVersionStatus(0);
+
+
+
+            baseMapper.updateById(ontology);
+
+
+
+            
+
+
+
+            // 4. 娣囨繂鐡ㄩ懞鍌滃仯閸扢ySQL
+
+
+
+            Map<String, Integer> nodeIdMap = new HashMap<>(); // 閸撳秶顏琁D -> 閺佺増宓佹惔ID
+
+
+
+            
+
+
+
+            // 娣囨繂鐡ㄧ猾鏄忓Ν?
+
+
+
+            for (GraphWarehouseDTO.NodeDTO node : dto.getNodes()) {
+
+
+
+                if ("class".equals(node.getType())) {
+
+
+
+                    OntologyClass ontologyClass = new OntologyClass();
+
+
+
+                    ontologyClass.setOntologyId(newOntologyId);
+
+
+
+                    ontologyClass.setName(node.getName());
+
+
+
+                    ontologyClass.setDescription(node.getDescription());
+
+
+
+                    ontologyClass.setCreateTime(new Date());
+
+
+
+                    ontologyClass.setUpdateTime(new Date());
+
+
+
+                    
+
+
+
+                    ontologyClassMapper.insert(ontologyClass);
+
+
+
+                    nodeIdMap.put(node.getId(), ontologyClass.getClassId());
+
+
+
+                }
+
+
+
+            }
+
+
+
+            
+
+
+
+            // 娣囨繂鐡ㄧ偘绶ラ懞鍌滃仯
+
+
+
+            for (GraphWarehouseDTO.NodeDTO node : dto.getNodes()) {
+
+
+
+                if ("individual".equals(node.getType())) {
+
+
+
+                    OntologyIndividual individual = new OntologyIndividual();
+
+
+
+                    individual.setOntologyId(newOntologyId);
+
+
+
+                    individual.setName(node.getName());
+
+
+
+                    individual.setDescription(node.getDescription());
+
+
+
+                    individual.setCreateTime(new Date());
+
+
+
+                    individual.setUpdateTime(new Date());
+
+
+
+                    
+
+
+
+                    ontologyIndividualMapper.insert(individual);
+
+
+
+                    nodeIdMap.put(node.getId(), individual.getIndividualId());
+
+
+
+                }
+
+
+
+            }
+
+
+
+            
+
+
+
+            // 5. 娣囨繂鐡ㄩ崗宕囬兇閸扢ySQL
+
+
+
+            int relationCount = 0;
+
+
+
+            for (GraphWarehouseDTO.EdgeDTO edge : dto.getRelationships()) {
+
+
+
+                Integer sourceId = nodeIdMap.get(edge.getSource());
+
+
+
+                Integer targetId = nodeIdMap.get(edge.getTarget());
+
+
+
+                
+
+
+
+                if (sourceId == null || targetId == null) {
+
+
+
+                    log.warn("閸忓磭閮撮懞鍌滃仯閺堫亝澹橀崚? {} -> {}", edge.getSource(), edge.getTarget());
+
+
+
+                    continue;
+
+
+
+                }
+
+
+
+                
+
+
+
+                // 閸掋倖鏌囬崗宕囬兇璇
+
+
+
+                String sourceType = getNodeType(dto.getNodes(), edge.getSource());
+
+
+
+                String targetType = getNodeType(dto.getNodes(), edge.getTarget());
+
+
+
+                
+
+
+
+                if ("class".equals(sourceType) && "class".equals(targetType)) {
+
+
+
+                    // 鑽ゆ埛閹靛灝鍙х化?
+
+
+
+                    ClassInheritance inheritance = new ClassInheritance();
+
+
+
+                    inheritance.setChildClassId(sourceId);
+
+
+
+                    inheritance.setParentClassId(targetId);
+
+
+
+                    classInheritanceMapper.insert(inheritance);
+
+
+
+                    relationCount++;
+
+
+
+                } else if ("individual".equals(sourceType) && "class".equals(targetType)) {
+
+
+
+                    // 鐎圭偘绶ョ猾璇查崗宕囬兇
+
+
+
+                    IndividualType individualType = new IndividualType();
+
+
+
+                    individualType.setIndividualId(sourceId);
+
+
+
+                    individualType.setClassId(targetId);
+
+
+
+                    individualTypeMapper.insert(individualType);
+
+
+
+                    relationCount++;
+
+
+
+                } else if ("individual".equals(sourceType) && "individual".equals(targetType)) {
+
+
+
+                    // 鐎圭偘绶ヨ杽鐏炵偞褍鍙х化?
+
+
+
+                    IndividualPropertyValue propertyValue = new IndividualPropertyValue();
+
+
+
+                    propertyValue.setIndividualId(sourceId);
+
+
+
+                    propertyValue.setPropertyId(1); // 姒涱吇鐏炵偞顪廌
+
+
+
+                    propertyValue.setValueType("OBJECT");
+
+
+
+                    propertyValue.setObjectIndividualId(targetId);
+
+
+
+                    individualPropertyValueMapper.insert(propertyValue);
+
+
+
+                    relationCount++;
+
+
+
+                }
+
+
+
+            }
+
+
+
+            
+
+
+
+            log.info("warehouseGraph: 閸忋儱绨遍幋濮涢敍灞肩箽鐎涙ü {} 娑擃亣閻愮櫢绱漿} 閺夊彠璇插煂MySQL", 
+
+
+
+                    nodeIdMap.size(), relationCount);
+
+
+
+            
+
+
+
+            return GraphWarehouseResponseDTO.builder()
+
+
+
+                    .status("success")
+
+
+
+                    .message("閸ユ崘姘ㄩ崗銉ョ氨閹存劕")
+
+
+
+                    .nodeCount(nodeIdMap.size())
+
+
+
+                    .relationshipCount(relationCount)
+
+
+
+                    .version(dto.getVersion())
+
+
+
+                    .timestamp(LocalDateTime.now())
+
+
+
+                    .build();
+
+
+
+                    
+
+
+
+        } catch (Exception e) {
+
+
+
+            log.error("warehouseGraph: 閸忋儱绨辨径", e);
+
+
+
+            throw new RuntimeException("閸ユ崘姘ㄩ崗銉ョ氨婢惰精: " + e.getMessage(), e);
+
+
+
+        }
+
+
+
+    }
+
+
+
+    
+
+
+
+    /**
+
+
+
+     * 閼惧嘲褰囬懞鍌滃仯璇
+
+
+
+     */
+
+
+
+    private String getNodeType(List<GraphWarehouseDTO.NodeDTO> nodes, String nodeId) {
+
+
+
+        for (GraphWarehouseDTO.NodeDTO node : nodes) {
+
+
+
+            if (node.getId().equals(nodeId)) {
+
+
+
+                return node.getType();
+
+
+
+            }
+
+
+
+        }
+
+
+
+        return "individual";
+
+
+
+    }
+
+
+
+}

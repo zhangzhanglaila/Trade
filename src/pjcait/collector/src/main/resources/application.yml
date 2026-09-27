@@ -1,0 +1,115 @@
+server:
+  port: 43052
+  servlet:
+    context-path: /api
+
+
+spring:
+  application:
+    name: cait-collector
+  datasource:
+    url: jdbc:mysql://${CAIT_DB_HOST:127.0.0.1}:${CAIT_DB_PORT:3306}/${CAIT_DB_NAME:cait}?useUnicode=true&characterEncoding=utf-8&useSSL=true&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true
+    username: ${CAIT_DB_USERNAME:root}
+    password: ${CAIT_DB_PASSWORD:}
+
+  cloud:
+    consul:
+      host: 127.0.0.1
+      port: 8500
+      discovery:
+        register: true
+        register-health-check: true
+        ip-address: 127.0.0.1
+        hostname: 127.0.0.1
+        port: 43052
+        service-name: cait-collector
+        instance-id: cait-collector-node-1
+        heartbeat:
+          reregister-service-on-failure: true
+        health-check-path: /api/health/check
+        tags: ['mixed-node',]
+        metadata:
+          scheme: http
+          base-path: /api
+
+
+  config:
+    import: 'optional:consul:127.0.0.1:8500/cait/config/collector'
+  quartz:
+    job-store-type: jdbc
+    overwrite-existing-jobs: true
+    jdbc:
+      initialize-schema: always
+  kafka:
+    admin:
+      auto-create: true
+    consumer:
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    producer:
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+
+mybatis:
+  configuration:
+    #    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    cait.collector.common.mapper: ${WEB_BACKEND_LOG_LEVEL:${CONSOLE_LOG_LEVEL:debug}}
+    cait.collector.web: ${WEB_BACKEND_LOG_LEVEL:${CONSOLE_LOG_LEVEL:debug}}
+    org.mybatis: ${WEB_BACKEND_MYBATIS_LOG_LEVEL:${CONSOLE_LOG_LEVEL:debug}}
+
+springdoc:
+  swagger-ui:
+    enabled: true
+
+llm:
+  base-url: http://127.0.0.1:6210/api/v1
+  api_key: ''
+  model: qwen2.5-0.5b.gguf
+  temperature: 0.1
+  system-prompt: 你是一个自然语言文本处理的模型，负责按照用户要求对数据进行处理，除了用户要求的内容以外，其他内容不要输出。
+
+cait:
+  collector:
+    # 3:00
+    data-update-job-cron: 0 0 3 * * ?
+#    data-update-job-cron: 10 * * * * ?
+    #    run-mode: worker
+    #    run-mode: job
+    run-mode: all
+    data-store-type: es
+    data-store-location: ./data/pjcait/collects
+    easyspider:
+      wrapper-service-name: 'easyspider-runner'
+      callback-url: 'http://127.0.0.1:43052/api/callback'
+    datasource:
+      peoples-daily:
+        enabled: true
+      gdelt:
+        enabled: false
+        theme-filter-keywords: [ 'TRADE', 'EXPORT', 'IMPORT' ]
+        theme-exclude-keywords: [ ]
+        theme-keywords-min-ratio: 0.005
+        location-filter-keywords: [ 'china' ]
+        download-cache-dir: './cache/gdelt'
+      google:
+        enabled: false
+        secret-key: ''
+        cx: ''
+        search:
+          keywords:
+            - query: '贸易物流'
+              page: 1,2,10,3
+              language: lang_zh-CN
+              date-restrict: d[1]
+            #              siteSearch:
+            - query: '交通运输'
+              page: 1,2,10,3
+              language: lang_zh-CN
+              date-restrict: d[1]
+#              siteSearch:

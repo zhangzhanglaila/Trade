@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AJ-Report 大屏入口</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Microsoft YaHei", Arial, sans-serif;
+            background: #f5f7fa;
+            color: #1f2937;
+        }
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .card {
+            background: #fff;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+            margin-bottom: 20px;
+        }
+        h1, h2, p { margin-top: 0; }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .button {
+            display: inline-block;
+            padding: 10px 18px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            border: 1px solid #2563eb;
+            color: #2563eb;
+            background: #fff;
+        }
+        .button.primary {
+            background: #2563eb;
+            color: #fff;
+        }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .meta-item {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .meta-item strong {
+            display: block;
+            margin-bottom: 6px;
+        }
+        .tips {
+            padding-left: 18px;
+            line-height: 1.7;
+        }
+        .frame-wrap {
+            margin-top: 18px;
+            height: 760px;
+            border: 1px solid #dbe3ef;
+            border-radius: 14px;
+            overflow: hidden;
+            background: #fff;
+        }
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+        }
+        .status {
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: #eff6ff;
+            color: #1d4ed8;
+            margin-top: 16px;
+        }
+        .status.error {
+            background: #fef2f2;
+            color: #b91c1c;
+        }
+        code {
+            background: #eef2ff;
+            padding: 2px 6px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <div class="card">
+        <h1>AJ-Report 大屏统一入口</h1>
+        <p>这个页面由 <code>TDProject-main</code> 提供，用来统一跳转或嵌入独立运行的 AJ-Report 服务。</p>
+        <div class="actions">
+            <a class="button primary" id="openDirect" href="/aj-report/go" target="_blank" rel="noopener noreferrer">直接打开 AJ-Report</a>
+            <a class="button" href="/aj-report/config" target="_blank" rel="noopener noreferrer">查看当前接入配置</a>
+        </div>
+        <div class="meta" id="meta"></div>
+        <div class="status" id="status">正在加载 AJ-Report 配置...</div>
+    </div>
+
+    <div class="card">
+        <h2>打不开时先检查这些地方</h2>
+        <ul class="tips">
+            <li>AJ-Report 是否已经启动，默认访问地址通常是 <code>http://127.0.0.1:9095/</code>。</li>
+            <li><code>application.yaml</code> 中的 <code>integration.aj-report.base-url</code> 和 <code>entry-path</code> 是否填写正确。</li>
+            <li>AJ-Report 的数据库 SQL 是否已经导入，<code>conf/bootstrap.yml</code> 中数据库账号密码是否正确。</li>
+            <li>如果内嵌区域空白，通常是 AJ-Report 不允许被 iframe 加载，这时请使用“直接打开 AJ-Report”。</li>
+        </ul>
+        <div class="frame-wrap" id="frameWrap" hidden>
+            <iframe id="reportFrame" title="AJ-Report"></iframe>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function init() {
+        const status = document.getElementById('status');
+        const meta = document.getElementById('meta');
+        const frameWrap = document.getElementById('frameWrap');
+        const reportFrame = document.getElementById('reportFrame');
+        const openDirect = document.getElementById('openDirect');
+
+        try {
+            const response = await fetch('/aj-report/config', { headers: { 'Accept': 'application/json' } });
+            if (!response.ok) {
+                throw new Error('配置接口返回状态码 ' + response.status);
+            }
+
+            const config = await response.json();
+            openDirect.href = '/aj-report/go';
+
+            meta.innerHTML = [
+                ['AJ-Report 地址', config.baseUrl],
+                ['入口路径', config.entryPath],
+                ['最终访问地址', config.targetUrl],
+                ['是否启用内嵌', String(config.embedEnabled)],
+                ['页面标题', config.frameTitle]
+            ].map(function (item) {
+                return '<div class="meta-item"><strong>' + item[0] + '</strong><span>' + item[1] + '</span></div>';
+            }).join('');
+
+            if (config.embedEnabled) {
+                frameWrap.hidden = false;
+                reportFrame.src = config.targetUrl;
+                reportFrame.title = config.frameTitle || 'AJ-Report';
+                status.textContent = '配置已加载。若下方 iframe 无法显示，请改用“直接打开 AJ-Report”。';
+                status.className = 'status';
+            } else {
+                status.textContent = '当前已关闭 iframe 内嵌，仅保留跳转入口。';
+                status.className = 'status';
+            }
+        } catch (error) {
+            status.textContent = '加载配置失败：' + error.message + '。请先检查 TDProject-main 是否启动正常。';
+            status.className = 'status error';
+        }
+    }
+
+    init();
+</script>
+</body>
+</html>

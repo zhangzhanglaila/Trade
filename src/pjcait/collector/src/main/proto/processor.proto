@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+option java_package = "cait.common.pb";
+option java_outer_classname = "ProcessorPb";
+
+option go_package = "cait/app/service/pb";
+
+enum ContentFileStorageType {
+  StorageTypeEs = 0;
+  StorageTypeFs = 1;
+}
+
+message NewsProcessMessage {
+  string id = 1;
+
+  repeated string content_keys = 2;
+  ContentFileStorageType storage_type = 3;
+}

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.tdproject.generator.mapper.ComprehensiveDataMapper">
+
+    <resultMap id="BaseResultMap" type="com.example.tdproject.generator.domain.ComprehensiveData">
+            <id property="id" column="id" />
+            <result property="corpusEntryCount" column="corpus_entry_count" />
+            <result property="dataEntryCount" column="data_entry_count" />
+            <result property="queryVisitCount" column="query_visit_count" />
+            <result property="tradeCountryCount" column="trade_country_count" />
+            <result property="statYear" column="stat_year" />
+            <result property="statMonth" column="stat_month" />
+            <result property="updateTime" column="update_time" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,corpus_entry_count,data_entry_count,query_visit_count,trade_country_count,stat_year,
+        stat_month,update_time
+    </sql>
+
+    <select id="selectLatestByYearMonth" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM comprehensive_data
+        WHERE stat_year = #{year} AND stat_month = #{month}
+        ORDER BY update_time DESC
+        LIMIT 1
+    </select>
+</mapper>

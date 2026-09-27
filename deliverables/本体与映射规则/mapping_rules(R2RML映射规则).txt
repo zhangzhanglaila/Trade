@@ -1,0 +1,41 @@
+@prefix map: <http://example.com/map#> .
+@prefix vocab: <http://example.com/vocab#> .
+@prefix d2rq: <http://www.wiwiss.fu-berlin.de/suhl/bizer/D2RQ/0.1#> .
+@prefix jdbc: <http://d2rq.org/terms/jdbc/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+#数据库连接配置
+map:Database a d2rq:Database;
+    d2rq:jdbcDriver "com.mysql.cj.jdbc.Driver";  #使用新的MySQL驱动类
+    d2rq:jdbcDSN "jdbc:mysql://localhost/your_database?useSSL=false";  #添加useSSL参数
+    d2rq:username "your_user";
+    d2rq:password "your_pass" .
+
+#货物实体映射
+map:Shipment a d2rq:ClassMap;
+    d2rq:dataStorage map:Database;
+    d2rq:sourceTable "shipments";  #指定源表名
+    d2rq:uriPattern "http://example.com/货物/@@商品编码@@";  #使用唯一编码作为URI部分
+    d2rq:class vocab:货物 .
+
+#商品编码属性映射
+map:ProductCode a d2rq:PropertyBridge;
+    d2rq:belongsToClassMap map:Shipment;
+    d2rq:property vocab:商品编码;
+    d2rq:column "shipments.商品编码";
+    d2rq:datatype xsd:string .
+
+#仓储位置映射（作为文字值）
+map:WarehouseLocation a d2rq:PropertyBridge;
+    d2rq:belongsToClassMap map:Shipment;
+    d2rq:property vocab:仓储位置;
+    d2rq:column "shipments.注册地名称";  #从shipments表的注册地名称列获取值
+    d2rq:datatype xsd:string .
+
+#发货日期映射（格式转换）
+map:DeliveryDate a d2rq:PropertyBridge;
+    d2rq:belongsToClassMap map:Shipment;
+    d2rq:property vocab:发货日期;
+    d2rq:column "shipments.数据年月";
+    d2rq:datatype xsd:date;  #使用完整日期类型
+    d2rq:uriRegex "([0-9]{4})([0-9]{2})" "http://example.com/dates/$1-$2-01" .  # 转换为YYYY-MM-DD格式

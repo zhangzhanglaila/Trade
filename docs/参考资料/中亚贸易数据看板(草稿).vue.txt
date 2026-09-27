@@ -1,0 +1,195 @@
+<!-- 中亚贸易数据看板 -->
+<template>
+   
+
+  <div class="dashboard">
+    <!-- 顶部标题 -->
+    <header class="header">中亚贸易</header>
+
+    <!-- 指标卡片 -->
+    <section class="kpi-section">
+      <div class="kpi-card" v-for="k in kpiList" :key="k.label">
+        <div class="value">{{ k.value }}</div>
+        <div class="unit">{{ k.unit }}</div>
+        <div class="label">{{ k.label }}</div>
+      </div>
+    </section>
+
+    <!-- 图表区域 -->
+    <section class="chart-section">
+      <div class="chart-box">
+        <div class="chart-title">地区贸易分布</div>
+        <div ref="pieRef" class="chart"></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title">贸易品类占比</div>
+        <div ref="barRef" class="chart"></div>
+      </div>
+    </section>
+  </div>
+</template>
+
+<script setup>
+import { ref, onMounted } from 'vue'
+import * as echarts from 'echarts'
+
+/* KPI 数据 */
+const kpiList = [
+  { label: '出口总量', value: '526.3万', unit: '吨' },
+  { label: '贸易国家', value: '5', unit: '个' },
+  { label: '贸易品类', value: '128', unit: '种' },
+  { label: '合作项目', value: '110', unit: '项' },
+  { label: '数据管理', value: '+12.3%', unit: '较上月增长' },
+  { label: '图谱可视化', value: '64.7万', unit: '吨（土库曼斯坦）' }
+]
+
+/* 图表 DOM */
+const pieRef = ref()
+const barRef = ref()
+
+/* 初始化图表 */
+onMounted(() => {
+  // 饼图：地区分布
+  const pieChart = echarts.init(pieRef.value)
+  pieChart.setOption({
+    tooltip: { trigger: 'item' },
+    legend: { orient: 'vertical', left: 'left' },
+    series: [
+      {
+        type: 'pie',
+        radius: '60%',
+        data: [
+          { value: 156.2, name: '哈萨克斯坦' },
+          { value: 132.5, name: '乌兹别克斯坦' },
+          { value: 98.3, name: '吉尔吉斯斯坦' },
+          { value: 75.6, name: '塔吉克斯坦' },
+          { value: 64.7, name: '土库曼斯坦' }
+        ]
+      }
+    ]
+  })
+
+  // 柱状图：品类占比
+  const barChart = echarts.init(barRef.value)
+  barChart.setOption({
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'category',
+      data: ['机械设备', '电子产品', '化工产品', '建筑材料', '其他']
+    },
+    yAxis: { type: 'value', name: '占比(%)' },
+    series: [
+      {
+        type: 'bar',
+        data: [28, 22, 18, 15, 17],
+        itemStyle: { color: '#1890ff' }
+      }
+    ]
+  })
+
+  /* 自适应 */
+  window.addEventListener('resize', () => {
+    pieChart.resize()
+    barChart.resize()
+  })
+})
+</script>
+
+<style scoped>
+.dashboard {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+.header {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 24px;
+  color: #001529;
+}
+.kpi-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.kpi-card {
+  background: #fff;
+  border-radius: 6px;
+  padding: 20px;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.value {
+  font-size: 28px;
+  font-weight: 600;
+  color: #1890ff;
+}
+.unit {
+  font-size: 12px;
+  color: #999;
+  margin: 4px 0;
+}
+.label {
+  font-size: 14px;
+  color: #666;
+}
+.chart-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 16px;
+}
+.chart-box {
+  background: #fff;
+  border-radius: 6px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.chart-title {
+  font-size: 16px;
+  font-weight: 500;
+  margin-bottom: 12px;
+  color: #333;
+}
+.chart {
+  height: 300px;
+}
+</style>
+
+
+
+
+
+<!-- SideNav.vue -->
+<template>
+  <aside class="side-nav">
+    <h1 class="logo">中亚贸易</h1>
+    <nav class="nav">
+      <router-link
+        v-for="item in menu"
+        :key="item.path"
+        :to="item.path"
+        class="nav-item"
+        active-class="active"
+      >
+        <component :is="item.icon" class="icon" />
+        <span>{{ item.label }}</span>
+      </router-link>
+    </nav>
+  </aside>
+</template>
+
+<script setup>
+import { h } from 'vue'
+/* 使用渲染函数创建简单 SVG 图标，无额外依赖 */
+const icon = (d) => h('svg', { viewBox: '0 0 24 24', fill: 'currentColor', class: 'icon' }, h('path', { d }))
+const menu = [
+  { label: '数据看板', path: '/tradeDashboard', icon: icon('M3 13h2v8H3zm4-8h2v16H7zm4-2h2v18h-2zm4 4h2v14h-2zm4-2h2v16h-2z') },
+  { label: '语料管理', path: '/corpusManagement', icon: icon('M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z') },
+  { label: '数据管理', path: '/data', icon: icon('M13 2.05v3.03c3.39.49 6 3.39 6 6.92 0 .9-.18 1.75-.48 2.54l2.6 1.53c.56-1.24.88-2.62.88-4.07 0-5.18-3.95-9.45-9-9.95zM12 19c-3.87 0-7-3.13-7-7 0-3.53 2.61-6.43 6-6.92V2.05c-5.06.5-9 4.76-9 9.95 0 5.52 4.47 10 9.99 10 3.31 0 6.24-1.61 8.06-4.09l-2.6-1.53C16.17 17.98 14.21 19 12 19z') },
+  { label: '图谱可视化', path: '/dataVisualization', icon: icon('M3 3v18h18V3H3zm16 16H5V5h14v14zM11 7h2v2h-2V7zm0 4h2v2h-2v-2zm0 4h2v2h-2v-2z') },
+  { label: '智能问答', path: '/qa', icon: icon('M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V4c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z') }
+]
+</script>
+
+<style scoped>

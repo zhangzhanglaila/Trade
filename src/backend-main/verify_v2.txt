@@ -1,0 +1,34 @@
+Found 16 keywords: ['当前版本', '创建', '更新', '本体', '版本', '项目', '实例', '根据', '名称', '存在', '保存', '继承', '关系', '导入', 'Excel', '图数据库']
+
+Sample lines with Chinese:
+==================================================
+     * 分页当版本（仅状为1的当前
+                .eq(Ontology::getVersionStatus, 1)  // 1表示当版本
+     * 栍项目名称包含历史版本?
+            queryWrapper.ne(Ontology::getId, excludeId);  // 排除（用于更新
+     * 保存新本体（初版本?
+        entity.setVersionStatus(1);  // 新创认为当版本
+        // 初版本号认1.0
+     * 更新（创新版本，版本历史版本?
+        // 1. 查当版本
+        log.info("项目[{}]的当前朷历史版本，影响? {}", projectName, updateCount);
+        // 3. 创建斉?
+        // 更新新属（仅盖空字段）
+        newVersion.setVersionStatus(1);  // 设为当版本
+        // 4. 校验版本号€并保存
+            log.error("项目[{}]版本[{}]已存新", newVersion.getProjectName(), newVersion.getVersionNumber());
+     * 校验+版本号唯€?
+     * 版本回滚（将历史版本设为当前版本?
+            log.error("回滚头）ID[{}]不存在或不是历史版", versionId);
+        log.info("项目[{}]的当前朷历史版本，影响? {}", projectName, currentToHistory);
+        log.info("项目[{}]的历叉[{}]已转为当前版影响行数: {}", projectName, versionId, rows);
+     * 挈建人分当版本
+     * 糊匹配分当版本
+     * Excel导入（持重名浼存则更於不存在新?
+                log.error("导入头，仅Excel文");
+                throw new RuntimeException("仅?xlsx?xls格式Excel文");
+            // 3. 解析Excel文
+            // 4. Excel叡称（优先使Excel名称?
+                throw new RuntimeException("项目名称不能为");
+                // 项目：执行更新操作（创建斉
+                log.warn("项目名称[{}]已存将执行更新操?, excelProjectName);

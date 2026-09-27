@@ -1,0 +1,22 @@
+Verification - Sample lines with Chinese:
+==================================================
+     * 分页当版本朽（仅状为1的当前朼
+                .eq(Ontology::getVersionStatus, 1)  // 1表示当版本
+     * 栍项目名称朼包含历史版本?
+            queryWrapper.ne(Ontology::getId, excludeId);  // 排除臺（用于更新
+     * 保存新本体（初版本?
+        entity.setVersionStatus(1);  // 新创认为当版本
+        // 初版本号认1.0
+     * 更新朽（创新版本，版本轸历史版本?
+        // 1. 查当版本
+        log.info("项目[{}]的当前朷轸历史版本，影响? {}", projectName, updateCount);
+        // 3. 创建斉?
+        // 更新新属（仅盖空字段）
+        newVersion.setVersionStatus(1);  // 设为当版本
+        // 4. 校验版本号丧并保存
+            log.error("项目[{}]版本[{}]已存圼新", newVersion.getProjectName(), newVersion.getVersionNumber());
+     * 校验+版本号唯?
+     * 版本回滚（将历史版本设为当前版本?
+            log.error("回滚头）ID[{}]不存在或不是历史版", versionId);
+        log.info("项目[{}]的当前朷轸历史版本，影响? {}", projectName, currentToHistory);
+        log.info("项目[{}]的历叉[{}]已转为当前版朼影响行数: {}", projectName, versionId, rows);

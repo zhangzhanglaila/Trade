@@ -1,0 +1,112 @@
+server:
+  port: 8080
+
+# ============================================================
+# 运行期根目录（运行时数据、外部资源的定位基准）
+#   默认值 = 启动 Java 进程时的工作目录，即「cd 到项目根再启动」时自动指向项目根
+#   服务器上推荐显式指定，例如：export TRADE_HOME=/opt/trade
+# 所有项目内资源都以此为准，不再依赖开发机的盘符路径。
+# ============================================================
+trade:
+  home: ${TRADE_HOME:${user.dir}}
+
+# ============================================================
+# JWT 签名密钥
+#   ⚠️ 泄露即可伪造任意用户登录令牌。
+#      真实值放在项目根 config/.env 的 JWT_SECRET（该文件不入库，见 config/README.md）。
+#      未配置时应用会启动失败，这是刻意设计——避免用公开默认值签名。
+# ============================================================
+jwt:
+  secret: ${JWT_SECRET:}
+  expiration: ${JWT_EXPIRATION:86400000}
+
+
+spring:
+  # 数据源配置（凭据见 config/.env，不入库）
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:foreign_trade_qa_db}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:123456}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      idle-timeout: 300000
+
+  # Redis配置
+
+  # 文件上传配置
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 100MB
+
+# 文件存储路径配置（运行期自建，应用启动时会自动创建）
+upload:
+  file:
+    location: ${trade.home}/runtime/uploadFiles/
+
+# 图数据库配置（Apache Jena TDB，运行期自建目录）
+ontology:
+  graph:
+    store-path: ${trade.home}/runtime/ontology-graph-store
+    named-graph-prefix: http://example.org/ontology/
+  # 本体框架文件路径（trade.rdf），用于 CSV→RDF 转换与一致性校验
+  schema-path: ${trade.home}/deliverables/本体与映射规则/trade（protege建模导出）.rdf
+
+# MyBatis-Plus配置
+mybatis-plus:
+  mapper-locations: classpath:generator/mapper/*.xml
+  type-aliases-package: com.example.tdproject.generator.domain,com.example.tdproject.User
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+
+# SpringDoc OpenAPI配置
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operationsSorter: method
+  packages-to-scan: com.example.tdproject.controller,com.example.tdproject.ai.controller
+
+# AI 统一入口配置（千问相关敏感信息请自行填写，不要提交到版本库）
+ai:
+  tradeSpringBoot:
+    base-url: http://127.0.0.1:8081/api
+  flask:
+    base-url: http://127.0.0.1:5000
+  qwen:
+    api-key:
+    base-url: ${QWEN_BASE_URL:}
+    chat:
+      model:
+    embedding:
+      model:
+    endpoints:
+      chat: ${QWEN_CHAT_ENDPOINT:}
+      embedding: ${QWEN_EMBEDDING_ENDPOINT:}
+  milvus:
+    host: ${MILVUS_HOST:127.0.0.1}
+    port: ${MILVUS_PORT:19530}
+    collection: ${MILVUS_COLLECTION:news_corpus}
+    dimension: ${MILVUS_DIMENSION:1024}
+    topK: ${MILVUS_TOPK:5}
+
+integration:
+  aj-report:
+    base-url: ${AJ_REPORT_BASE_URL:http://127.0.0.1:9095}
+    entry-path: ${AJ_REPORT_ENTRY_PATH:/}
+    screen1-path: ${AJ_REPORT_SCREEN1_PATH:/index.html#/aj/eYmVi5sx}
+    screen2-path: ${AJ_REPORT_SCREEN2_PATH:/index.html#/aj/9jMigyT7}
+    embed-enabled: ${AJ_REPORT_EMBED_ENABLED:true}
+    frame-title: ${AJ_REPORT_FRAME_TITLE:AJ-Report 大屏入口}
+
+crawler:
+  base-url: ${CRAWLER_BASE_URL:http://127.0.0.1:56887}
+  callback-base-url: ${CRAWLER_CALLBACK_BASE_URL:http://127.0.0.1:8080}
+  enabled-sources:
+    - kazinform
+    - mofcom

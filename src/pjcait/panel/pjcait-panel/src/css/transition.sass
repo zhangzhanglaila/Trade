@@ -1,0 +1,64 @@
+// fade
+
+.fade-enter-active,
+.fade-leave-active
+  transition: all 0.17s ease
+
+.fade-enter-from,
+.fade-leave-to
+  opacity: 0
+
+//  slide-fade-up
+
+.slide-fade-up-enter-active,
+.slide-fade-up-leave-active
+  transition: all 0.2s ease
+
+.fade-up-enter-from
+  opacity: 0
+  transform: translateY(10px)
+
+.slide-fade-up-enter-to
+  opacity: 1
+  transform: translateY(0)
+
+.slide-fade-up-leave-from
+  opacity: 1
+  transform: translateY(0)
+
+.slide-fade-up-leave-to
+  opacity: 0
+  transform: translateY(-10px)
+
+//  slide-fade-blur
+
+//.slide-fade-blur-enter-active,
+//.slide-fade-blur-leave-active
+//  transition: all 0.2s ease
+
+.slide-fade-blur-enter-active
+  transition: all 0.5s cubic-bezier(0.42, 0.95, 0.37, 1.00)
+
+// 初始状态：组件刚进入视图前，从左边来、不透明度为0、有模糊
+.slide-fade-blur-enter-from
+  transform: translateX(30px)
+  opacity: 0
+  filter: blur(1px)
+
+// 最终状态：进入动画结束后，正常位置、不透明、无模糊
+.slide-fade-blur-enter-to
+  transform: translateX(0)
+  opacity: 1
+  filter: blur(0)
+
+// 离开动画开始：正常状态
+.slide-fade-blur-leave-from
+  transform: translateX(0)
+  opacity: 1
+  filter: blur(0)
+
+// 离开动画结束：向右移、透明、模糊
+.slide-fade-blur-leave-to
+  transform: translateX(30px)
+  opacity: 0
+  filter: blur(1px)
