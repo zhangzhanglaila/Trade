@@ -99,8 +99,11 @@ integration:
   aj-report:
     base-url: ${AJ_REPORT_BASE_URL:http://127.0.0.1:9095}
     entry-path: ${AJ_REPORT_ENTRY_PATH:/}
-    screen1-path: ${AJ_REPORT_SCREEN1_PATH:/index.html#/aj/eYmVi5sx}
-    screen2-path: ${AJ_REPORT_SCREEN2_PATH:/index.html#/aj/9jMigyT7}
+    # 大屏分享码：必须与 aj_report 库 gaea_report_share.share_code 一致，
+    # 否则 /index.html#/aj/<code> 会报「分享链接已失效」。
+    # 当前两条记录由 deploy/init_aj_report.sh 生成（JWT 用 aj-report 作 HMAC 密钥签名）。
+    screen1-path: ${AJ_REPORT_SCREEN1_PATH:/index.html#/aj/KhTradeA1}
+    screen2-path: ${AJ_REPORT_SCREEN2_PATH:/index.html#/aj/KhTradeB2}
     embed-enabled: ${AJ_REPORT_EMBED_ENABLED:true}
     frame-title: ${AJ_REPORT_FRAME_TITLE:AJ-Report 大屏入口}
 

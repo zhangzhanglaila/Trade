@@ -130,3 +130,6 @@ logs/
 /config/*
 !/config/README.md
 !/config/.env.example
+
+# AJ-Report 运行期缓存（Ehcache 落盘，不入库）
+/src/dashboard-ajreport/cache/
