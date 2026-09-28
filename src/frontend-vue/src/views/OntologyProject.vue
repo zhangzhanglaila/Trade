@@ -89,6 +89,48 @@
 
     <!-- Tab 内容区 -->
     <a-tabs v-model:activeKey="activeKey" type="card" class="content-tabs">
+      <!-- 本体可视化：放在第一个 tab 且默认选中。
+           原先它排在最后、且只在切到该 tab 时才发请求（watch(activeKey)），
+           于是「必须先点一下才看得到图」，点完还要再等接口 18s。
+           现在改为：进页面就在后台预加载 + 默认展示本 tab。 -->
+      <a-tab-pane key="visual" tab="本体可视化">
+        <div class="tab-content visual-content">
+          <div class="visual-toolbar">
+            <a-space>
+              <a-select v-model:value="visualLayout" style="width: 150px" @change="handleLayoutChange">
+                <a-select-option value="force">力导向布局</a-select-option>
+                <a-select-option value="circular">环形布局</a-select-option>
+                <a-select-option value="hierarchical">层次布局</a-select-option>
+              </a-select>
+              <a-button @click="handleRefreshVisual" :loading="visualLoading">
+                <ReloadOutlined /> 刷新
+              </a-button>
+              <a-button @click="handleExportVisual" :disabled="!visualChartInstance">
+                <DownloadOutlined /> 导出图片
+              </a-button>
+            </a-space>
+          </div>
+          <div class="visual-stats" v-if="visualStats.nodeCount > 0">
+            <a-space size="large">
+              <span>节点: <strong>{{ visualStats.nodeCount }}</strong></span>
+              <span>边: <strong>{{ visualStats.edgeCount }}</strong></span>
+              <span>类: <strong>{{ visualStats.classCount }}</strong></span>
+              <span>实例: <strong>{{ visualStats.individualCount }}</strong></span>
+              <span v-if="visualStats.totalTriples">
+                全图三元组: <strong>{{ visualStats.totalTriples }}</strong>
+              </span>
+              <span v-if="visualStats.truncated" class="visual-truncated">（图为抽样展示，非全量）</span>
+            </a-space>
+          </div>
+          <a-spin :spinning="visualLoading" tip="正在加载图谱数据，首次约需十几秒…">
+            <div class="visual-container" ref="visualChart" style="height: 600px;"></div>
+          </a-spin>
+          <div v-if="!visualLoading && visualStats.nodeCount === 0" class="visual-empty">
+            该本体暂无可视化数据，请先在本体管理中「入库」RDF 数据。
+          </div>
+        </div>
+      </a-tab-pane>
+
       <!-- 类管理 -->
       <a-tab-pane key="class" tab="类管理">
         <div class="tab-content">
@@ -265,35 +307,6 @@
         </div>
       </a-tab-pane>
 
-      <!-- 本体可视化 -->
-      <a-tab-pane key="visual" tab="本体可视化">
-        <div class="tab-content visual-content">
-          <div class="visual-toolbar">
-            <a-space>
-              <a-select v-model:value="visualLayout" style="width: 150px" @change="handleLayoutChange">
-                <a-select-option value="force">力导向布局</a-select-option>
-                <a-select-option value="circular">环形布局</a-select-option>
-                <a-select-option value="hierarchical">层次布局</a-select-option>
-              </a-select>
-              <a-button @click="handleRefreshVisual">
-                <ReloadOutlined /> 刷新
-              </a-button>
-              <a-button @click="handleExportVisual">
-                <DownloadOutlined /> 导出图片
-              </a-button>
-            </a-space>
-          </div>
-          <div class="visual-stats" v-if="visualStats.nodeCount > 0">
-            <a-space size="large">
-              <span>节点: <strong>{{ visualStats.nodeCount }}</strong></span>
-              <span>边: <strong>{{ visualStats.edgeCount }}</strong></span>
-              <span>类: <strong>{{ visualStats.classCount }}</strong></span>
-              <span>实例: <strong>{{ visualStats.individualCount }}</strong></span>
-            </a-space>
-          </div>
-          <div class="visual-container" ref="visualChart" style="height: 600px;"></div>
-        </div>
-      </a-tab-pane>
     </a-tabs>
 
     <!-- 新增/编辑类弹窗 -->
@@ -612,7 +625,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   LeftOutlined,
@@ -667,7 +680,7 @@ const versionStatus = ref(1)
 const namespaceUri = ref('')
 
 // 当前Tab
-const activeKey = ref('class')
+const activeKey = ref('visual')
 
 // 统计数据
 const statData = reactive({
@@ -770,12 +783,15 @@ const propertyColumns = [
 const visualLayout = ref('force')
 const visualChart = ref(null)
 const visualChartInstance = ref(null)
+const visualLoading = ref(false)
 const visualData = ref({ nodes: [], edges: [] })
 const visualStats = ref({
   nodeCount: 0,
   edgeCount: 0,
   classCount: 0,
-  individualCount: 0
+  individualCount: 0,
+  totalTriples: 0,
+  truncated: false
 })
 
 // 关系查看
@@ -851,6 +867,8 @@ onMounted(() => {
   loadIndividualData()
   loadPropertyData()
   loadStats()
+  // 进页面就在后台把可视化数据拉下来（接口约 18s，等用户切 tab 时已经就绪）
+  loadVisualizationData()
 })
 
 // 监听筛选条件变化
@@ -1472,12 +1490,22 @@ function getPropertyTypeText(type) {
 
 // 可视化函数
 async function handleRefreshVisual() {
-  await loadVisualizationData()
+  await loadVisualizationData(true)
 }
 
-async function loadVisualizationData() {
-  if (!ontologyId.value) return
-  
+/**
+ * 拉取并渲染本体可视化数据。
+ *
+ * @param {boolean} forceRender 为 true 时忽略当前 tab 直接渲染（点「刷新」按钮用）
+ *
+ * 关键点：数据加载与「渲染」解耦。接口要跑全图扫描，首次约十几秒，所以进页面
+ * 就在后台先把它拉下来；而 ECharts 渲染必须等容器可见（隐藏 tab 的 clientWidth
+ * 为 0，init 会失败），因此只有本 tab 处于激活状态时才 renderChart()。
+ */
+async function loadVisualizationData(forceRender = false) {
+  if (!ontologyId.value || visualLoading.value) return
+
+  visualLoading.value = true
   try {
     const res = await getOntologyVisualization(ontologyId.value)
     if (res?.data) {
@@ -1521,27 +1549,22 @@ async function loadVisualizationData() {
       
       visualData.value = { nodes, edges }
       
-      // 统计
+      // 统计（totalTriples / truncated 来自后端 statistics，图是抽样时如实告知）
+      const st = res.data.statistics || {}
       visualStats.value = {
         nodeCount: nodes.length,
         edgeCount: edges.length,
         classCount: nodes.filter(n => n.type === 'class').length,
-        individualCount: nodes.filter(n => n.type === 'individual').length
+        individualCount: nodes.filter(n => n.type === 'individual').length,
+        totalTriples: st.totalTriples || 0,
+        truncated: !!st.truncated
       }
       
-      console.log('可视化数据:', { 
-        originalNodes: res.data.nodes?.length,
-        originalEdges: res.data.edges?.length,
-        dedupNodes: nodes.length, 
-        dedupEdges: edges.length,
-        sampleNode: nodes[0],
-        sampleEdge: edges[0]
-      })
-      
-      // 渲染图表
-      if (nodes.length > 0) {
+      // 渲染图表：只在「本 tab 可见」或显式要求渲染时进行
+      if (nodes.length > 0 && (forceRender || activeKey.value === 'visual')) {
+        await nextTick()
         renderChart()
-      } else {
+      } else if (nodes.length === 0) {
         message.warning('没有有效的可视化数据')
       }
     } else {
@@ -1550,38 +1573,41 @@ async function loadVisualizationData() {
   } catch (e) {
     console.error('加载可视化数据失败:', e)
     message.error(`加载可视化数据失败：${e.message}`)
+  } finally {
+    visualLoading.value = false
   }
 }
 
+/** renderChart 因容器不可见而重试的次数（每次 100ms，最多 ~5s） */
+let renderRetry = 0
+
 function renderChart() {
-  console.log('renderChart called, visualChart:', visualChart.value)
-  
   if (!visualChart.value) {
-    console.error('图表容器不存在')
     message.error('图表容器未找到')
     return
   }
-  
-  // 检查容器尺寸
+
+  // 检查容器尺寸。隐藏的 tab 里 clientWidth/Height 为 0，
+  // 此时 echarts.init 会得到 0×0 画布，必须等容器可见再渲染。
   const width = visualChart.value.clientWidth
   const height = visualChart.value.clientHeight
-  console.log('图表容器尺寸:', width, 'x', height)
-  
+
   if (width === 0 || height === 0) {
-    console.error('图表容器尺寸为 0，延迟重试')
-    setTimeout(renderChart, 100)
+    if (renderRetry < 50) {
+      renderRetry += 1
+      setTimeout(renderChart, 100)
+    }
     return
   }
-  
+  renderRetry = 0
+
   // 如果已有实例，先销毁
   if (visualChartInstance.value) {
     visualChartInstance.value.dispose()
   }
-  
+
   // 初始化 ECharts
-  console.log('初始化 ECharts...')
   visualChartInstance.value = echarts.init(visualChart.value)
-  console.log('ECharts 初始化完成')
   
   let nodes = visualData.value.nodes || []
   let edges = visualData.value.edges || []
@@ -1756,10 +1782,16 @@ function handleExportVisual() {
   link.click()
 }
 
-// 监听 Tab 切换到可视化时加载数据
-watch(activeKey, (newKey) => {
-  if (newKey === 'visual' && visualData.value.nodes.length === 0) {
-    loadVisualizationData()
+// 监听 Tab 切换到可视化：
+//   · 数据已在后台预加载完 → 立即渲染（无需再等接口）
+//   · 还在加载中 → 什么都不做，等 loadVisualizationData 完成后自行渲染
+watch(activeKey, async (newKey) => {
+  if (newKey !== 'visual') return
+  if (visualData.value.nodes.length > 0) {
+    await nextTick()
+    renderChart()
+  } else if (!visualLoading.value) {
+    loadVisualizationData(true)
   }
 })
 </script>
@@ -1964,5 +1996,17 @@ watch(activeKey, (newKey) => {
 .visual-stats strong {
   color: #1890ff;
   font-size: 16px;
+}
+
+/* 图是抽样展示时给个提示，避免误以为是全量 */
+.visual-truncated {
+  color: #d46b08;
+  font-size: 13px;
+}
+
+.visual-empty {
+  padding: 40px 0;
+  text-align: center;
+  color: #999;
 }
 </style>
