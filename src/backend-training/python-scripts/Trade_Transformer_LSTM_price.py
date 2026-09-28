@@ -693,22 +693,29 @@ logging.info(f"split_mode:{args.split_mode}, n_train:{len(train_idx)}, n_test:{l
 
 # 打印部分样本
 print("\n部分预测值 VS 真实值:")
-# 关键：根据预测目标（price/quantity）选择正确的变量名
-if args.target == 'quantity':
-    # 数量预测：用quantity相关变量
-    max_print = min(len(pred_quantity), len(true_quantity))
-    pred_var = pred_quantity
-    true_var = true_quantity
-else:
-    # 单价预测：用renminbi相关变量（你的脚本中单价预测实际用的是这个变量）
-    max_print = min(len(pred_renminbi), len(true_renminbi))
-    pred_var = pred_renminbi
-    true_var = true_renminbi
-
-# 最多打印10条，避免输出冗余
-max_print = min(max_print, 10)
+# 本脚本的评估结果不分 --target，统一存放于 pred_renminbi / true_renminbi。
+# 原实现按 args.target 分支引用 pred_quantity，但该变量只存在于 quantity 脚本中，
+# 在本文件内从未定义，故 --target quantity 时必然抛
+# NameError: name 'pred_quantity' is not defined（第 699 行）。
+max_print = min(len(pred_renminbi), len(true_renminbi), 10)
 for i in range(max_print):
-    print(f"预测: {target_name}={pred_var[i].item():.2f} 真实: {target_name}={true_var[i].item():.2f}")
+    print(f"预测: {target_name}={pred_renminbi[i].item():.2f} 真实: {target_name}={true_renminbi[i].item():.2f}")
+# 中文字体回退：Linux 服务器一般没有 SimHei，缺字体只会让中文渲染成方块（不报错），
+# 这里按可用性挑一个中文字体，都没有则退回默认字体，保证出图不中断。
+try:
+    import matplotlib.font_manager as _fm
+    _avail_fonts = {f.name for f in _fm.fontManager.ttflist}
+    for _cand in ('SimHei', 'Noto Sans CJK SC', 'WenQuanYi Zen Hei',
+                  'WenQuanYi Micro Hei', 'AR PL UMing CN', 'Source Han Sans SC'):
+        if _cand in _avail_fonts:
+            plt.rcParams['font.sans-serif'] = [_cand]
+            break
+    else:
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+except Exception:
+    pass
+plt.rcParams['axes.unicode_minus'] = False
+
 # 绘制预测 vs 真实曲线
 plt.figure(figsize=(12, 6))
 plt.plot(true_renminbi, label=f'真实{target_name}', color='blue')

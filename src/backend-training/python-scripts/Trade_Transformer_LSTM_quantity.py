@@ -697,7 +697,20 @@ max_print = min(max_print, 10)
 for i in range(max_print):
     print(f"预测: {target_name}={pred_quantity[i].item():.2f} 真实: {target_name}={true_quantity[i].item():.2f}")
 # --- 绘图部分 ---
-plt.rcParams['font.sans-serif'] = ['SimHei']
+# 中文字体回退：Linux 服务器一般没有 SimHei，硬编码只会让中文渲染成方块（不报错），
+# 这里按可用性挑一个中文字体，都没有则退回默认字体，保证出图不中断。
+try:
+    import matplotlib.font_manager as _fm
+    _avail_fonts = {f.name for f in _fm.fontManager.ttflist}
+    for _cand in ('SimHei', 'Noto Sans CJK SC', 'WenQuanYi Zen Hei',
+                  'WenQuanYi Micro Hei', 'AR PL UMing CN', 'Source Han Sans SC'):
+        if _cand in _avail_fonts:
+            plt.rcParams['font.sans-serif'] = [_cand]
+            break
+    else:
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+except Exception:
+    pass
 plt.rcParams['axes.unicode_minus'] = False
 
 # 绘制预测 vs 真实曲线
