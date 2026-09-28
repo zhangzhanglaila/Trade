@@ -616,11 +616,44 @@ _res = {
 }
 
 print(f"\n  测试集中「训练期未见过的商品」占比: {cold_mask.mean() * 100:.1f}%")
+
+# ---- 诊断：区分「模型没学会」与「任务本身学不会」 ----
+# R2≈0 有两种截然不同的成因，只看 R2 无法区分：
+#   (a) 预测退化为常数（模型没学到东西）—— 判别：预测标准差/真实标准差 << 1
+#   (b) 学到了但泛化不了（噪声/分布漂移主导）—— 判别：训练集 R2 高、测试集 R2 低
+# 结项时这两种情况的处置方式完全不同，因此必须把判别依据一并输出。
+_eval_loader = DataLoader(train_dataset, batch_size=256, shuffle=False)
+_train_preds = []
+model.eval()
+with torch.no_grad():
+    for _x_cat_b, _x_cont_b, _ in _eval_loader:
+        _train_preds.append(model(_x_cat_b.to(device), _x_cont_b.to(device)).cpu().numpy())
+train_o = _to_orig(np.concatenate(_train_preds, axis=0))
+train_true_o = _to_orig(y_train)
+
+_r2_train = r2_score(train_true_o, train_o)
+_m_r2 = _res['模型'][0]
+_std_true = float(np.std(true_o))
+_std_pred = float(np.std(model_o))
+_ratio = (_std_pred / _std_true) if _std_true > 0 else float('nan')
+_uniq = int(len(np.unique(np.round(model_o, 2))))
+
+print(f"\n  诊断（区分「没学会」与「学不会」）:")
+print(f"    训练集 R2={_r2_train:>9.4f}   测试集 R2={_m_r2:>9.4f}   落差={_r2_train - _m_r2:>+8.4f}")
+print(f"    预测值标准差 / 真实值标准差 = {_ratio:.4f}   （远小于 1 表示预测退化成常数）")
+print(f"    预测均值={float(np.mean(model_o)):>15.2f}   真实均值={float(np.mean(true_o)):>15.2f}")
+print(f"    预测值去重后个数(保留2位小数) = {_uniq} / {len(model_o)}")
+if _ratio < 0.3:
+    print(f"    -> 预测几乎没有方差，模型输出接近常数：属于「没学会」，应先查训练是否有效。")
+elif _r2_train - _m_r2 > 0.3:
+    print(f"    -> 训练集明显好于测试集：属于「学到了但泛化不了」，任务噪声/分布漂移主导。")
+else:
+    print(f"    -> 训练与测试表现接近且均接近 0：特征信息量不足，或任务本身接近不可预测。")
+
 # ---- 结论判定 ----
 # 原实现只与「最弱」的朴素基线（上一期值）比较：commodity 协议下模型 R2=-0.6354
 # （深度为负、甚至不如全局均值），却仍打印「模型 R2 优于基线」，极易被误读成
 # 「模型具备预测能力」。故改为：与「最强」朴素基线比较，且 R2<=0 一律判为不达标。
-_m_r2 = _res['模型'][0]
 _naive = {k: v for k, v in _res.items() if k != '模型'}
 _best_name, _best_vals = max(_naive.items(), key=lambda kv: kv[1][0])
 _best_r2 = _best_vals[0]
