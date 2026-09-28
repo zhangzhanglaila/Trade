@@ -300,7 +300,24 @@ public interface OntologyService extends IService<Ontology> {
      * @return 可视化数据（节点和边）
      */
     OntologyVisualizationDTO getOntologyVisualization(Long ontologyId);
-    
+
+    /**
+     * 解析某个本体实际可用的命名图 URI。
+     *
+     * <p>不能直接用当前版本的 URI：命名图 URI 是
+     * {@code namedGraphPrefix + projectName + "/v" + versionNumber} 拼出来的
+     * （见 JenaGraphRepositoryImpl.buildNamedGraphUri），而库里的 versionNumber
+     * 种子值和前端输入框都自带 "v"（例如 "v1.0"），拼出来是 {@code /vv1.0}。
+     * 一旦版本号写法与导入时不一致，直接用当前版本就会查到空图。
+     *
+     * <p>所以这里遍历该项目的所有版本，返回第一个确实存在数据的命名图；
+     * 都不存在时退回当前版本的 URI（可能为空图）。
+     *
+     * @param ontologyId 本体ID
+     * @return 命名图 URI；本体不存在或出错时返回 null
+     */
+    String resolveNamedGraphUri(Long ontologyId);
+
     /**
      * 图谱入库 - 保存编辑后的图谱数据
      * @param dto 入库请求数据

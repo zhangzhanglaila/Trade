@@ -305,38 +305,12 @@ public class GraphAnalysisController {
      * 获取NamedGraph URI - 查询所有版本找到包含数据的
      */
     private String getNamedGraphUri(Long ontologyId) {
-        try {
-            Ontology ontology = ontologyService.getById(ontologyId);
-            if (ontology == null) {
-                return null;
-            }
-            
-            String projectName = ontology.getProjectName();
-            
-            // 获取该项目的所有版本
-            List<Ontology> versions = ontologyService.getVersionsByProjectName(projectName);
-            
-            // 遍历所有版本，找到包含数据的命名图
-            for (Ontology version : versions) {
-                String namedGraphUri = graphRepository.buildNamedGraphUri(
-                        projectName, 
-                        version.getVersionNumber());
-                
-                if (graphRepository.namedGraphExists(namedGraphUri)) {
-                    log.info("找到包含数据的命名图: {} (版本: {})", namedGraphUri, version.getVersionNumber());
-                    return namedGraphUri;
-                }
-            }
-            
-            // 如果没有找到，返回当前版本的（可能为空）
-            return graphRepository.buildNamedGraphUri(
-                    projectName, 
-                    ontology.getVersionNumber());
-                    
-        } catch (Exception e) {
-            log.error("获取NamedGraph URI失败", e);
-            return null;
-        }
+        // 逻辑已上提到 OntologyService.resolveNamedGraphUri()，与可视化接口
+        // /ontology/{id}/visualization 共用。原先两处各写一份：这里遍历版本找
+        // 有数据的图，可视化那边却直接用当前版本的 URI，于是版本号写法一变
+        // （命名图 URI 是 prefix+name+"/v"+version，版本号自带 "v" → /vv1.0）
+        // 可视化就查到空图，而图分析仍正常。这里只做转发，调用点不变。
+        return ontologyService.resolveNamedGraphUri(ontologyId);
     }
 
     /**

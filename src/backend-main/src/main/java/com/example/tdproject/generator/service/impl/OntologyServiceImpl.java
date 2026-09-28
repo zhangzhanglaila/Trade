@@ -1494,14 +1494,40 @@ public class OntologyServiceImpl extends ServiceImpl<OntologyMapper, Ontology> i
                     .build();
         }
 
-        String namedGraphUri = graphRepository.buildNamedGraphUri(
-                ontology.getProjectName(), ontology.getVersionNumber());
-        
+        // 走跨版本解析，避免「当前版本号写法与导入时不一致 → 查到空图」
+        // （命名图 URI 里版本号自带 v，实际是 /vv1.0，见 §3.1）
+        String namedGraphUri = resolveNamedGraphUri(ontologyId);
         log.info("getOntologyVisualization: graphUri={}", namedGraphUri);
 
         return graphRepository.getVisualizationData(namedGraphUri);
     }
-    
+
+    @Override
+    public String resolveNamedGraphUri(Long ontologyId) {
+        Ontology ontology = baseMapper.selectById(ontologyId);
+        if (ontology == null) {
+            return null;
+        }
+        String projectName = ontology.getProjectName();
+        try {
+            // 遍历该项目所有版本，返回第一个确实存在数据的命名图
+            for (Ontology version : getVersionsByProjectName(projectName)) {
+                String uri = graphRepository.buildNamedGraphUri(
+                        projectName, version.getVersionNumber());
+                if (graphRepository.namedGraphExists(uri)) {
+                    log.info("resolveNamedGraphUri: 命中命名图 {} (版本 {})",
+                            uri, version.getVersionNumber());
+                    return uri;
+                }
+            }
+        } catch (Exception e) {
+            log.error("resolveNamedGraphUri: 遍历版本失败, ontologyId={}", ontologyId, e);
+        }
+        // 都没有数据就退回当前版本的 URI（可能是空图，由上层按空处理）
+        return graphRepository.buildNamedGraphUri(
+                projectName, ontology.getVersionNumber());
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public GraphWarehouseResponseDTO warehouseGraph(GraphWarehouseDTO dto) {
