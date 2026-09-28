@@ -258,6 +258,7 @@ def import_trade_and_aggregate(conn, args):
 
     t0 = time.time()
     total = 0
+    skipped_no_date = 0          # 因缺「数据年月」被丢弃的行数
     with conn.cursor() as cur:
         if not args.keep_trade_records:
             cur.execute('TRUNCATE TABLE trade_records')
@@ -270,6 +271,14 @@ def import_trade_and_aggregate(conn, args):
                     continue
                 for row in rd:
                     ym = to_int(row.get('数据年月'))
+                    # 缺「数据年月」的行直接丢弃：没有月份就无法归属到任何时段，
+                    # 灌进去只会得到 data_year_month 为空的残缺记录。
+                    # 实测：哈萨克斯坦/出口/2021.{7—8,9—10}.csv 这两个损坏文件
+                    # 的表头是 9 列（缺「数据年月」「注册地」「贸易方式」），
+                    # 曾因此污染 11,600 行。详见该目录 _quarantine/README.md
+                    if ym is None:
+                        skipped_no_date += 1
+                        continue
                     partner = (row.get('贸易伙伴名称') or '').strip() or country
                     place_name = (row.get('注册地名称') or '').strip() or None
                     comm_code = (row.get('商品编码') or '').strip() or None
@@ -324,6 +333,9 @@ def import_trade_and_aggregate(conn, args):
             if idx % 25 == 0 or idx == len(files):
                 log('      进度 %3d/%d  %8.2fs  已写 trade_records %d 行'
                     % (idx, len(files), time.time() - t0, total))
+
+        if skipped_no_date:
+            log('      已跳过 %d 行（缺「数据年月」，无法归属时段）' % skipped_no_date)
 
         # ---- 写统计表 ----
         log('      聚合 -> country_monthly_trade')
