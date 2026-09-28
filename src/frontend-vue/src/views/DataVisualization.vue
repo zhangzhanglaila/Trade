@@ -296,7 +296,10 @@
         <div v-else-if="graphData.nodes.length === 0" class="empty-chart-overlay">
           <ReloadOutlined style="font-size: 64px; color: #d9d9d9;" />
           <div class="empty-title">暂无数据</div>
-          <div class="empty-desc">该本体暂无图谱数据</div>
+          <div class="empty-desc">
+            该本体暂无图谱数据，请先执行图谱导入：
+            <code>mvn test -Dgraph.import=true -Dtest=RdfBulkImportTest</code>
+          </div>
         </div>
         
         <div class="chart-toolbar" v-if="selectedOntology && graphData.nodes.length > 0">
@@ -755,82 +758,6 @@ import { detectCommunities, analyzeCentrality as apiAnalyzeCentrality, queryNeig
 // ========== 数据 ==========
 const ontologyList = ref([])
 
-// 生成模拟图谱数据
-const generateMockData = () => {
-  const nodes = []
-  const links = []
-  
-  // 创建类节点
-  const classes = [
-    { id: 'class1', name: '产品', type: 'class' },
-    { id: 'class2', name: '供应商', type: 'class' },
-    { id: 'class3', name: '订单', type: 'class' },
-    { id: 'class4', name: '客户', type: 'class' }
-  ]
-  
-  // 创建实例节点
-  const individuals = [
-    { id: 'ind1', name: 'iPhone 15', type: 'individual', classId: 'class1' },
-    { id: 'ind2', name: 'MacBook Pro', type: 'individual', classId: 'class1' },
-    { id: 'ind3', name: '富士康', type: 'individual', classId: 'class2' },
-    { id: 'ind4', name: '比亚迪', type: 'individual', classId: 'class2' },
-    { id: 'ind5', name: '订单2024001', type: 'individual', classId: 'class3' },
-    { id: 'ind6', name: '订单2024002', type: 'individual', classId: 'class3' },
-    { id: 'ind7', name: '张三', type: 'individual', classId: 'class4' },
-    { id: 'ind8', name: '李四', type: 'individual', classId: 'class4' }
-  ]
-  
-  // 添加所有节点
-  ;[...classes, ...individuals].forEach(item => {
-    nodes.push({
-      id: item.id,
-      name: item.name,
-      value: item.name,
-      type: item.type,
-      symbolSize: item.type === 'class' ? 40 : 25,
-      itemStyle: {
-        color: item.type === 'class' ? '#1890ff' : '#52c41a'
-      },
-      iri: `http://example.org/${item.id}`,
-      description: `${item.name}的描述信息`,
-      importance: 5,
-      status: 'active',
-      draggable: true
-    })
-  })
-  
-  // 创建关系
-  const relations = [
-    { source: 'class1', target: 'class2', label: 'hasSupplier', type: 'objectProperty' },
-    { source: 'ind1', target: 'class1', label: 'instanceOf', type: 'instanceOf' },
-    { source: 'ind2', target: 'class1', label: 'instanceOf', type: 'instanceOf' },
-    { source: 'ind3', target: 'class2', label: 'instanceOf', type: 'instanceOf' },
-    { source: 'ind4', target: 'class2', label: 'instanceOf', type: 'instanceOf' },
-    { source: 'ind1', target: 'ind3', label: 'producedBy', type: 'objectProperty' },
-    { source: 'ind2', target: 'ind3', label: 'producedBy', type: 'objectProperty' },
-    { source: 'ind5', target: 'ind1', label: 'contains', type: 'objectProperty' },
-    { source: 'ind6', target: 'ind2', label: 'contains', type: 'objectProperty' },
-    { source: 'ind7', target: 'ind5', label: 'placed', type: 'objectProperty' },
-    { source: 'ind8', target: 'ind6', label: 'placed', type: 'objectProperty' }
-  ]
-  
-  relations.forEach((rel, index) => {
-    links.push({
-      id: `edge${index}`,
-      source: rel.source,
-      target: rel.target,
-      value: rel.label,
-      label: rel.label,  // 保持为字符串，入库时使用
-      lineStyle: {},
-      type: rel.type,
-      editable: rel.type === 'objectProperty',
-      description: '',
-      weight: 1
-    })
-  })
-  
-  return { nodes, links }
-}
 
 // ========== 状态变量 ==========
 const selectedOntology = ref(null)
@@ -1055,6 +982,21 @@ const loadOntologyList = async () => {
   }
 }
 
+/**
+ * 清空图谱，并让模板里的空状态覆盖层（empty-chart-overlay）显示出来。
+ *
+ * 注意不能只清 graphData：echarts 实例里还留着上一次渲染的图，否则会从
+ * 覆盖层底下露出来，看起来像"有数据"。
+ */
+const clearGraph = () => {
+  graphData.nodes = []
+  graphData.links = []
+  graphData.edges = []
+  if (myChart) {
+    myChart.clear()
+  }
+}
+
 const handleOntologyChange = async () => {
   if (!selectedOntology.value) {
     message.warning('请先选择本体')
@@ -1108,23 +1050,20 @@ const handleOntologyChange = async () => {
       renderChart()
       message.success(`已加载 ${nodes.length} 个节点, ${links.length} 条关系`)
     } else {
-      message.warning('该本体暂无图谱数据，使用示例数据展示')
-      // 使用模拟数据作为演示
-      const data = generateMockData()
-      graphData.nodes = data.nodes
-      graphData.links = data.links
-      graphData.edges = data.links
-      renderChart()
+      // 【已移除假数据兜底】原先这里会调 generateMockData() 画一张编造的图谱
+      // （产品/供应商/订单、iPhone 15、富士康、订单2024001、张三…），
+      // 只弹一个轻描淡写的 warning。
+      // 结项演示时这会造成「看起来有数据、实则全部虚构」，与后端
+      // InitDataController 写 Math.random() 属同一类问题，故彻底去掉：
+      // 清空后由模板里的空状态覆盖层显示"暂无数据"。
+      clearGraph()
+      message.warning('该本体暂无图谱数据，请先执行图谱导入（见 docs/服务器部署指南.md）')
     }
   } catch (error) {
     console.error('加载图谱数据失败:', error)
     message.error('加载图谱数据失败: ' + (error.message || '未知错误'))
-    // 失败时使用模拟数据作为备选
-    const data = generateMockData()
-    graphData.nodes = data.nodes
-    graphData.links = data.links
-    graphData.edges = data.links
-    renderChart()
+    // 同样不再用假数据兜底，如实显示空状态
+    clearGraph()
   } finally {
     loading.value = false
   }
@@ -2220,7 +2159,7 @@ const deleteEdge = () => {
   })
 }
 
-// 图分析功能 - 使用模拟数据
+// 图分析功能 - 基于已加载的真实 graphData 本地计算（原先这里标注"使用模拟数据"，但实现一直读的是 graphData，注释有误）
 const analyzeGraphStructure = () => {
   const nodeCount = graphData.nodes.length
   const edgeCount = graphData.links.length
