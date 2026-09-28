@@ -282,7 +282,9 @@ for name, group in df.groupby('_orig_comm', sort=False):
 
     X_cat_group = group[categorical_cols].values
     X_cont_group = group[continuous_cols].values
-    y_group = group[target_cols_log].values.reshape(-1)
+    # 必须保持二维 (M,1)：模型输出是 (B,1)，若 y 是 (B,) 则 MSELoss 会
+    # 广播成 (B,B)，训练损失会假性地恒定在方差附近（实测 ≈1.0）而不学习。
+    y_group = group[target_cols_log].values
     ym_group = group['数据年月'].astype('int64').values
 
     for i in range(len(X_cat_group) - seq_length):
@@ -291,7 +293,7 @@ for name, group in df.groupby('_orig_comm', sort=False):
                           y_group[i + seq_length]))
         seq_comm.append(str(name))
         seq_ym.append(int(ym_group[i + seq_length]))
-        seq_prev_y.append(float(y_group[i + seq_length - 1]))
+        seq_prev_y.append(float(y_group[i + seq_length - 1][0]))
 
 if not sequences:
     raise ValueError("没有足够数据创建序列，请检查数据或减小 seq_length")
