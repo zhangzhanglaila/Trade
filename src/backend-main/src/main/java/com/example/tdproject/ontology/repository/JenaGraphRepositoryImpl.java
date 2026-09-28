@@ -27,8 +27,12 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Apache Jena TDB 图数据库实现
@@ -1319,129 +1323,346 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
         }
     }
     
+    // =====================================================================
+    // 图谱可视化的规模上限
+    //
+    // 【背景】本图谱的命名图里有 356 万条三元组、约 196 万个「货物」实例。
+    // 改造前的实现在这数据上是这样坏的（实测）：
+    //   · 节点恒为空 —— 它用 `?x a owl:Class` 与 `?x a owl:NamedIndividual`
+    //     取节点，而这批数据的类型断言是自定义的 `vocab#货物`，两条查询都是空集；
+    //   · 边无上限全图扫描 —— 产出 1,459,728 条边、响应体 302 MB；
+    //   · 边两端 ID 由 localName 兜底拼出，节点集合里根本没有 → 全部悬空。
+    // 所以改成「类型聚合 + 抽样」：节点与边都有硬上限，边只连在已选中节点之间，
+    // 从而不产生悬空边；被截断的事实通过 statistics 如实告诉前端。
+    // =====================================================================
+
+    /** 类节点上限（按实例数降序取前 N 个类型） */
+    private static final int MAX_TYPES = 50;
+    /** 每个类型抽样多少个实例 */
+    private static final int PER_TYPE_LIMIT = 100;
+    /** 只为实例数最多的前 N 个类型抽样实例，避免总节点数失控 */
+    private static final int MAX_SAMPLED_TYPES = 8;
+    /** 节点总数上限（含为连通性补进来的对端节点） */
+    private static final int NODE_LIMIT = 600;
+    /** 边数上限 */
+    private static final int EDGE_LIMIT = 5000;
+    /** 类型聚合查询的行数上限 */
+    private static final int TYPE_ROW_LIMIT = 2000;
+    /** 单条查询超时（毫秒） */
+    private static final long QUERY_TIMEOUT_MS = 30_000L;
+
+    /**
+     * 把 URI 安全地写成 SPARQL 的 IRI 记号 {@code <...>}。
+     *
+     * <p>不能用 {@code FmtUtils.stringForNode()}：它会做**前缀缩写**，
+     * 把 {@code http://www.w3.org/1999/02/22-rdf-syntax-ns#type} 缩写成
+     * {@code rdf:type}，而这里拼出来的查询没有 PREFIX 声明，Jena 会直接报
+     * "Unresolved prefixed name: rdf:type"（实测踩过）。
+     * 所以强制输出完整 {@code <...>}，并按 SPARQL IRIREF 规则把不允许的字符
+     * 转成 {@code \\uXXXX}。
+     */
+    private static String iri(String uri) {
+        StringBuilder sb = new StringBuilder(uri.length() + 2);
+        sb.append('<');
+        for (int i = 0; i < uri.length(); i++) {
+            char c = uri.charAt(i);
+            if (c <= 0x20 || c == 0x7f || "<>\"{}|^`\\".indexOf(c) >= 0) {
+                sb.append(String.format("\\u%04X", (int) c));
+            } else {
+                sb.append(c);
+            }
+        }
+        sb.append('>');
+        return sb.toString();
+    }
+
+    /** 把字符串安全地写成 SPARQL 字面量 */
+    private static String literal(String s) {
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    /** 拼 VALUES 子句里的 IRI 列表 */
+    private static String valuesList(java.util.Collection<String> uris) {
+        StringBuilder sb = new StringBuilder();
+        for (String u : uris) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(iri(u));
+        }
+        return sb.toString();
+    }
+
+    /** 取 URI 最后一个 / 或 # 之后的部分作为显示名，过长则截断 */
+    private static String shortName(String uri) {
+        if (uri == null) {
+            return "";
+        }
+        int i = Math.max(uri.lastIndexOf('/'), uri.lastIndexOf('#'));
+        String s = (i >= 0 && i + 1 < uri.length()) ? uri.substring(i + 1) : uri;
+        return s.length() > 40 ? s.substring(0, 40) + "…" : s;
+    }
+
+    /** 生成唯一节点 ID（同名不同 URI 时追加序号，避免前端按 id 索引时互相覆盖） */
+    private static String uniqueId(String prefix, String base, Set<String> usedIds) {
+        String safe = (base == null || base.isEmpty()) ? "node" : base.replaceAll("\\s+", "_");
+        String id = prefix + safe;
+        int n = 2;
+        while (!usedIds.add(id)) {
+            id = prefix + safe + "_" + n++;
+        }
+        return id;
+    }
+
     @Override
     public OntologyVisualizationDTO getVisualizationData(String namedGraphUri) {
         List<OntologyVisualizationDTO.NodeDTO> nodes = new ArrayList<>();
         List<OntologyVisualizationDTO.EdgeDTO> edges = new ArrayList<>();
-        
+        Map<String, Object> statistics = new LinkedHashMap<>();
+
         if (namedGraphUri == null) {
             return OntologyVisualizationDTO.builder()
-                    .nodes(nodes)
-                    .edges(edges)
-                    .build();
+                    .nodes(nodes).edges(edges).statistics(statistics).build();
         }
-        
+
         log.info("getVisualizationData: querying graph: {}", namedGraphUri);
-        
+        String graphTerm = iri(namedGraphUri);
+
         dataset.begin(org.apache.jena.query.ReadWrite.READ);
         try {
             if (!dataset.containsNamedModel(namedGraphUri)) {
+                log.warn("getVisualizationData: 命名图不存在，返回空: {}", namedGraphUri);
                 dataset.commit();
+                statistics.put("graphExists", false);
                 return OntologyVisualizationDTO.builder()
-                        .nodes(nodes)
-                        .edges(edges)
-                        .build();
+                        .nodes(nodes).edges(edges).statistics(statistics).build();
             }
-            
-            // 1. 查询所有类作为节点
-            String classQuery = 
-                "SELECT ?class ?label ?parent WHERE { " +
-                "  GRAPH <" + namedGraphUri + "> { " +
-                "    ?class a <" + OWL.Class.getURI() + "> . " +
-                "    OPTIONAL { ?class <" + RDFS.label.getURI() + "> ?label } " +
-                "    OPTIONAL { ?class <" + RDFS.subClassOf.getURI() + "> ?parent . FILTER (?parent != <" + OWL.Thing.getURI() + ">) } " +
-                "  } " +
-                "}";
-            
-            Map<String, String> classIdMap = new HashMap<>();
-            Query query1 = QueryFactory.create(classQuery);
-            try (QueryExecution qexec = QueryExecutionFactory.create(query1, dataset)) {
-                ResultSet results = qexec.execSelect();
-                while (results.hasNext()) {
-                    QuerySolution soln = results.nextSolution();
-                    Resource classRes = soln.getResource("class");
-                    String classUri = classRes.getURI();
-                    String localName = classRes.getLocalName();
-                    if (localName == null || localName.isEmpty()) {
-                        localName = getLocalNameFromUri(classUri);
+
+            // ── 0. 真实总量：抽样归抽样，真实规模必须如实告诉前端 ──
+            // 一次扫描同时取「三元组数」与「不同主语数」。
+            // 实测（TDB1，356 万三元组）：单跑 COUNT(*) 4.1s、单跑
+            // COUNT(DISTINCT ?s) 9.5s，拆成两条等于把整图扫两遍——合并后省掉一遍。
+            //
+            // 注意这里不再单独跑「?s a ?t 的不同主语数」：那是第三次全图扫描。
+            // 类型维度的数量由下面的 typeDistribution 给出（按类型分别计数），
+            // 键名用 totalSubjects 而不是 totalInstances，避免与旧口径混淆。
+            long totalTriples = 0L;
+            long totalSubjects = 0L;
+            String totalsQuery =
+                    "SELECT (COUNT(*) AS ?c) (COUNT(DISTINCT ?s) AS ?d) WHERE { " +
+                    "  GRAPH " + graphTerm + " { ?s ?p ?o } " +
+                    "}";
+            Query qTotals = QueryFactory.create(totalsQuery);
+            try (QueryExecution qe = QueryExecutionFactory.create(qTotals, dataset)) {
+                qe.setTimeout(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                ResultSet rs = qe.execSelect();
+                if (rs.hasNext()) {
+                    QuerySolution sol = rs.nextSolution();
+                    RDFNode c = sol.get("c");
+                    RDFNode d = sol.get("d");
+                    if (c != null && c.isLiteral()) {
+                        totalTriples = c.asLiteral().getLong();
                     }
-                    
-                    String label = soln.contains("label") ? soln.getLiteral("label").getString() : localName;
-                    String parentUri = soln.contains("parent") ? soln.getResource("parent").getURI() : null;
-                    
-                    String nodeId = "class_" + localName;
-                    classIdMap.put(classUri, nodeId);
-                    
-                    nodes.add(OntologyVisualizationDTO.NodeDTO.builder()
-                            .id(nodeId)
-                            .label(label)
-                            .type("class")
-                            .color("#1890ff")  // 蓝色-类
-                            .size(60)
-                            .level(0)
-                            .uri(classUri)
-                            .parentId(parentUri != null ? "class_" + getLocalNameFromUri(parentUri) : null)
-                            .build());
-                    
-                    // 添加继承关系到边
-                    if (parentUri != null && classIdMap.containsKey(parentUri)) {
-                        edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
-                                .id("edge_sub_" + nodeId)
-                                .source(nodeId)
-                                .target(classIdMap.get(parentUri))
-                                .label("subClassOf")
-                                .type("subClassOf")
-                                .color("#999999")
-                                .build());
+                    if (d != null && d.isLiteral()) {
+                        totalSubjects = d.asLiteral().getLong();
                     }
                 }
             }
-            
-            // 2. 查询所有实例作为节点
-            String individualQuery = 
-                "SELECT ?individual ?label ?type WHERE { " +
-                "  GRAPH <" + namedGraphUri + "> { " +
-                "    ?individual a <" + OWL2.NamedIndividual.getURI() + "> . " +
-                "    OPTIONAL { ?individual <" + RDFS.label.getURI() + "> ?label } " +
-                "    OPTIONAL { ?individual a ?type . FILTER (?type != <" + OWL2.NamedIndividual.getURI() + "> && ?type != <" + OWL.Class.getURI() + ">) } " +
-                "  } " +
-                "}";
-            
-            Map<String, String> individualIdMap = new HashMap<>();
-            Query query2 = QueryFactory.create(individualQuery);
-            try (QueryExecution qexec = QueryExecutionFactory.create(query2, dataset)) {
-                ResultSet results = qexec.execSelect();
-                while (results.hasNext()) {
-                    QuerySolution soln = results.nextSolution();
-                    Resource indRes = soln.getResource("individual");
-                    String indUri = indRes.getURI();
-                    String localName = indRes.getLocalName();
-                    if (localName == null || localName.isEmpty()) {
-                        localName = getLocalNameFromUri(indUri);
+
+            // ── 1. 类型聚合 ──
+            // 先去重出「每个类型 URI 的实例数」，再在 Java 侧按 localName 归并。
+            // 为什么不直接在 SPARQL 里 GROUP BY 完整 URI：这批数据 277 个类型 URI
+            // 里有 275 个的 localName 都是「货物」（每个源文件各占一个命名空间），
+            // 按完整 URI 分组会得到 275 个信息量为零的重复节点。
+            Map<String, Long> typeCount = new LinkedHashMap<>();
+            Map<String, List<String>> typeUris = new LinkedHashMap<>();
+            String typeQuery =
+                    "SELECT ?type (COUNT(?s) AS ?cnt) WHERE { " +
+                    "  GRAPH " + graphTerm + " { ?s a ?type } " +
+                    "  FILTER (isIRI(?type)) " +
+                    "} GROUP BY ?type ORDER BY DESC(?cnt) LIMIT " + TYPE_ROW_LIMIT;
+            Query q1 = QueryFactory.create(typeQuery);
+            try (QueryExecution qe = QueryExecutionFactory.create(q1, dataset)) {
+                qe.setTimeout(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                ResultSet rs = qe.execSelect();
+                while (rs.hasNext()) {
+                    QuerySolution sol = rs.nextSolution();
+                    String typeUri = sol.getResource("type").getURI();
+                    long cnt = sol.getLiteral("cnt").getLong();
+                    String shortType = shortName(typeUri);
+                    typeCount.merge(shortType, cnt, Long::sum);
+                    typeUris.computeIfAbsent(shortType, k -> new ArrayList<>()).add(typeUri);
+                }
+            }
+
+            List<String> topTypes = new ArrayList<>(typeCount.keySet());
+            topTypes.sort((a, b) -> Long.compare(typeCount.get(b), typeCount.get(a)));
+            boolean truncated = typeCount.size() > MAX_TYPES;
+            if (topTypes.size() > MAX_TYPES) {
+                topTypes = new ArrayList<>(topTypes.subList(0, MAX_TYPES));
+            }
+
+            Set<String> usedIds = new LinkedHashSet<>();
+            Map<String, String> typeNodeId = new LinkedHashMap<>();
+            for (String tn : topTypes) {
+                long cnt = typeCount.get(tn);
+                String nodeId = uniqueId("class_", tn, usedIds);
+                typeNodeId.put(tn, nodeId);
+                List<String> urisOfType = typeUris.get(tn);
+                nodes.add(OntologyVisualizationDTO.NodeDTO.builder()
+                        .id(nodeId)
+                        .label(tn + "（" + cnt + "）")
+                        .type("class")
+                        .color("#1890ff")   // 蓝色-类
+                        .size(60)
+                        .level(0)
+                        .uri(urisOfType == null || urisOfType.isEmpty() ? null : urisOfType.get(0))
+                        .build());
+            }
+
+            // ── 2. 为实例数最多的前 MAX_SAMPLED_TYPES 个类型抽样实例 ──
+            // 按类型 localName 匹配（而不是某个具体类型 URI），这样抽样覆盖整个
+            // 数据集而不只是一两个源文件。
+            Set<String> seedUris = new LinkedHashSet<>();
+            int sampledTypes = 0;
+            for (String tn : topTypes) {
+                if (sampledTypes >= MAX_SAMPLED_TYPES || seedUris.size() >= NODE_LIMIT / 2) {
+                    break;
+                }
+                String q =
+                        "SELECT ?s WHERE { " +
+                        "  GRAPH " + graphTerm + " { ?s a ?t } " +
+                        "  FILTER (REPLACE(STR(?t), '^.*[/#]', '') = " + literal(tn) + ") " +
+                        "} LIMIT " + PER_TYPE_LIMIT;
+                Query qq = QueryFactory.create(q);
+                try (QueryExecution qe = QueryExecutionFactory.create(qq, dataset)) {
+                    qe.setTimeout(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    ResultSet rs = qe.execSelect();
+                    while (rs.hasNext()) {
+                        Resource r = rs.nextSolution().getResource("s");
+                        if (r != null && r.getURI() != null) {
+                            seedUris.add(r.getURI());
+                        }
                     }
-                    
-                    String label = soln.contains("label") ? soln.getLiteral("label").getString() : localName;
-                    String typeUri = soln.contains("type") ? soln.getResource("type").getURI() : null;
-                    
-                    String nodeId = "ind_" + localName;
-                    individualIdMap.put(indUri, nodeId);
-                    
-                    nodes.add(OntologyVisualizationDTO.NodeDTO.builder()
-                            .id(nodeId)
-                            .label(label)
-                            .type("individual")
-                            .color("#52c41a")  // 绿色-实例
-                            .size(40)
-                            .level(1)
-                            .uri(indUri)
-                            .build());
-                    
-                    // 添加实例类型关系到边
-                    if (typeUri != null && classIdMap.containsKey(typeUri)) {
+                }
+                sampledTypes++;
+            }
+
+            // ── 3. 补一层「种子节点一步可达的对端节点」──
+            // 否则边几乎全被过滤掉：这批数据是 货物 --仓储位置--> 仓库/省市，
+            // 种子全是「货物」，只取两端都在种子集合内的边会得到空集。
+            Set<String> selected = new LinkedHashSet<>(seedUris);
+            if (!seedUris.isEmpty() && selected.size() < NODE_LIMIT) {
+                String q =
+                        "SELECT DISTINCT ?o WHERE { " +
+                        "  GRAPH " + graphTerm + " { ?s ?p ?o } " +
+                        "  FILTER (isIRI(?o)) " +
+                        "  FILTER (?p != " + iri(RDF.type.getURI()) + ") " +
+                        "  FILTER (?p != " + iri(RDFS.subClassOf.getURI()) + ") " +
+                        "  VALUES ?s { " + valuesList(seedUris) + " } " +
+                        "} LIMIT " + (NODE_LIMIT - selected.size());
+                Query qq = QueryFactory.create(q);
+                try (QueryExecution qe = QueryExecutionFactory.create(qq, dataset)) {
+                    qe.setTimeout(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    ResultSet rs = qe.execSelect();
+                    while (rs.hasNext()) {
+                        Resource r = rs.nextSolution().getResource("o");
+                        if (r != null && r.getURI() != null && selected.size() < NODE_LIMIT) {
+                            selected.add(r.getURI());
+                        }
+                    }
+                }
+            }
+            if (selected.size() >= NODE_LIMIT) {
+                truncated = true;
+            }
+
+            // 为选中节点建节点，同时建立 URI -> 节点ID 映射
+            Map<String, String> uriToId = new LinkedHashMap<>();
+            for (String uri : selected) {
+                String nodeId = uniqueId("ind_", shortName(uri), usedIds);
+                uriToId.put(uri, nodeId);
+                nodes.add(OntologyVisualizationDTO.NodeDTO.builder()
+                        .id(nodeId)
+                        .label(shortName(uri))
+                        .type("individual")
+                        .color("#52c41a")   // 绿色-实例
+                        .size(40)
+                        .level(1)
+                        .uri(uri)
+                        .build());
+            }
+
+            // ── 4. 只在选中节点之间取边（两端都必须在 uriToId 里，故不会悬空）──
+            if (uriToId.size() >= 2) {
+                String vals = valuesList(uriToId.keySet());
+                String q =
+                        "SELECT ?s ?p ?o WHERE { " +
+                        "  GRAPH " + graphTerm + " { ?s ?p ?o } " +
+                        "  FILTER (isIRI(?o)) " +
+                        "  FILTER (?p != " + iri(RDF.type.getURI()) + ") " +
+                        "  FILTER (?p != " + iri(RDFS.subClassOf.getURI()) + ") " +
+                        "  VALUES ?s { " + vals + " } " +
+                        "  VALUES ?o { " + vals + " } " +
+                        "} LIMIT " + EDGE_LIMIT;
+                Query qq = QueryFactory.create(q);
+                int seq = 0;
+                try (QueryExecution qe = QueryExecutionFactory.create(qq, dataset)) {
+                    qe.setTimeout(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    ResultSet rs = qe.execSelect();
+                    while (rs.hasNext()) {
+                        QuerySolution sol = rs.nextSolution();
+                        Resource sRes = sol.getResource("s");
+                        Resource oRes = sol.getResource("o");
+                        Resource pRes = sol.getResource("p");
+                        String sid = sRes == null ? null : uriToId.get(sRes.getURI());
+                        String tid = oRes == null ? null : uriToId.get(oRes.getURI());
+                        if (sid == null || tid == null) {
+                            continue;   // 双保险：不产生悬空边
+                        }
                         edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
-                                .id("edge_type_" + nodeId)
-                                .source(nodeId)
-                                .target(classIdMap.get(typeUri))
+                                .id("edge_rel_" + (seq++))
+                                .source(sid)
+                                .target(tid)
+                                .label(pRes == null ? "" : shortName(pRes.getURI()))
+                                .type("objectProperty")
+                                .color("#fa8c16")
+                                .build());
+                    }
+                }
+                if (edges.size() >= EDGE_LIMIT) {
+                    truncated = true;
+                }
+            }
+
+            // ── 5. 实例 -> 类型 的 instanceOf 边，把节点挂到类下便于前端分层 ──
+            if (!uriToId.isEmpty() && !typeNodeId.isEmpty()) {
+                String q =
+                        "SELECT ?s ?t WHERE { " +
+                        "  GRAPH " + graphTerm + " { ?s a ?t } " +
+                        "  VALUES ?s { " + valuesList(uriToId.keySet()) + " } " +
+                        "}";
+                Query qq = QueryFactory.create(q);
+                int seq = 0;
+                try (QueryExecution qe = QueryExecutionFactory.create(qq, dataset)) {
+                    qe.setTimeout(QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    ResultSet rs = qe.execSelect();
+                    while (rs.hasNext()) {
+                        QuerySolution sol = rs.nextSolution();
+                        Resource sRes = sol.getResource("s");
+                        Resource tRes = sol.getResource("t");
+                        if (sRes == null || tRes == null) {
+                            continue;
+                        }
+                        String sid = uriToId.get(sRes.getURI());
+                        String tid = typeNodeId.get(shortName(tRes.getURI()));
+                        if (sid == null || tid == null) {
+                            continue;
+                        }
+                        edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
+                                .id("edge_type_" + (seq++))
+                                .source(sid)
+                                .target(tid)
                                 .label("instanceOf")
                                 .type("instanceOf")
                                 .color("#52c41a")
@@ -1449,80 +1670,52 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
                     }
                 }
             }
-            
-            // 3. 查询对象属性关系作为边
-            String relationQuery = 
-                "SELECT ?source ?prop ?target ?propLabel WHERE { " +
-                "  GRAPH <" + namedGraphUri + "> { " +
-                "    ?source ?prop ?target . " +
-                "    FILTER (isIRI(?target)) " +
-                "    FILTER (?prop != <" + RDF.type.getURI() + ">) " +
-                "    FILTER (?prop != <" + RDFS.subClassOf.getURI() + ">) " +
-                "    OPTIONAL { ?prop <" + RDFS.label.getURI() + "> ?propLabel } " +
-                "  } " +
-                "}";
-            
-            // 创建合并的URI到ID映射表（包含类和实例）
-            Map<String, String> allNodesIdMap = new HashMap<>();
-            allNodesIdMap.putAll(classIdMap);
-            allNodesIdMap.putAll(individualIdMap);
-            
-            Query query3 = QueryFactory.create(relationQuery);
-            try (QueryExecution qexec = QueryExecutionFactory.create(query3, dataset)) {
-                ResultSet results = qexec.execSelect();
-                while (results.hasNext()) {
-                    QuerySolution soln = results.nextSolution();
-                    Resource sourceRes = soln.getResource("source");
-                    Resource propRes = soln.getResource("prop");
-                    Resource targetRes = soln.getResource("target");
-                    
-                    String sourceUri = sourceRes.getURI();
-                    String targetUri = targetRes.getURI();
-                    String propUri = propRes.getURI();
-                    String propLabel = soln.contains("propLabel") ? 
-                            soln.getLiteral("propLabel").getString() : getLocalNameFromUri(propUri);
-                    
-                    // 从合并的映射表中查找ID，如果找不到则使用URI的localName
-                    String sourceId = allNodesIdMap.get(sourceUri);
-                    String targetId = allNodesIdMap.get(targetUri);
-                    
-                    // 如果映射表中没有，尝试直接提取localName作为ID（兼容前端保存的格式）
-                    if (sourceId == null) {
-                        sourceId = getLocalNameFromUri(sourceUri);
-                    }
-                    if (targetId == null) {
-                        targetId = getLocalNameFromUri(targetUri);
-                    }
-                    
-                    // 添加所有有效的关系（包括类与实例之间的关系）
-                    if (sourceId != null && targetId != null) {
-                        edges.add(OntologyVisualizationDTO.EdgeDTO.builder()
-                                .id("edge_rel_" + sourceId + "_" + targetId)
-                                .source(sourceId)
-                                .target(targetId)
-                                .label(propLabel)
-                                .type("objectProperty")
-                                .color("#fa8c16")
-                                .build());
-                    }
-                }
-            }
-            
+
             dataset.commit();
-            
-            log.info("getVisualizationData: found {} nodes, {} edges", nodes.size(), edges.size());
-            
+
+            // ── 6. 如实汇报：返回的是抽样，真实规模在这里 ──
+            Map<String, Object> typeDistribution = new LinkedHashMap<>();
+            for (String tn : topTypes) {
+                typeDistribution.put(tn, typeCount.get(tn));
+            }
+            // 按类型分别计数的实例数之和。对每个实例只有一个类型的数据等于实例总数；
+            // 多类型实例会被重复计入，这是「类型维度」的计数而非去重后的实例数。
+            long typedInstanceSum = 0L;
+            for (Long v : typeCount.values()) {
+                typedInstanceSum += (v == null ? 0L : v);
+            }
+
+            statistics.put("graphExists", true);
+            statistics.put("totalTriples", totalTriples);
+            statistics.put("totalSubjects", totalSubjects);
+            statistics.put("typedInstanceSum", typedInstanceSum);
+            statistics.put("typeCount", typeCount.size());
+            statistics.put("returnedNodes", nodes.size());
+            statistics.put("returnedEdges", edges.size());
+            statistics.put("sampled", true);
+            statistics.put("truncated", truncated);
+            statistics.put("nodeLimit", NODE_LIMIT);
+            statistics.put("edgeLimit", EDGE_LIMIT);
+            statistics.put("typeDistribution", typeDistribution);
+
+            log.info("getVisualizationData: graph={} 三元组={} 主语={} 类型={} -> "
+                            + "返回 {} 节点 / {} 边 (truncated={})",
+                    namedGraphUri, totalTriples, totalSubjects, typeCount.size(),
+                    nodes.size(), edges.size(), truncated);
+
         } catch (Exception e) {
             dataset.abort();
             log.error("Failed to get visualization data", e);
+            statistics.put("error", String.valueOf(e.getMessage()));
         }
-        
+
         return OntologyVisualizationDTO.builder()
                 .nodes(nodes)
                 .edges(edges)
+                .statistics(statistics)
                 .build();
     }
-    
+
     @Override
     public void saveVisualizationData(String namedGraphUri, 
                                       List<OntologyVisualizationDTO.NodeDTO> nodes, 
