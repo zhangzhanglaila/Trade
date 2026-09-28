@@ -21,6 +21,7 @@ import argparse
 import csv
 import glob
 import io
+import itertools
 import os
 import sys
 import time
@@ -193,6 +194,74 @@ def run_schema(conn, args):
 # ----------------------------------------------------------------------
 # 步骤 2：导入新闻语料
 # ----------------------------------------------------------------------
+# 目录里其实混了两种格式的 CSV：
+#   ① 爬虫导出格式（有表头）：
+#        title,date,desc,tags,url,content_html,content_text,pics,create_time
+#        → news_content_03-kazinform.csv / news_content_03-mofcom.csv
+#   ② 归档格式（【没有表头】，首行即数据）：
+#        id(哈希串), content(正文，标题可能以 **xxx** 内嵌在开头), (空列), date(YYYY-MM-DD)
+#        → archived-khnews-related-filtered.csv，27,425 条
+#
+# 【为什么必须特殊处理 ②】
+#   旧实现一律用 csv.DictReader 读取。对无表头文件，DictReader 会把**第一条记录
+#   当成表头**，于是后续每一行的 row.get('title') / row.get('content_text') 全是
+#   None，被 `if not title and not content: continue` 全部丢弃，最终打印 "0 行"
+#   却不算错误——27,425 条归档语料就这样被静默跳过，前端「新闻语料管理」只剩
+#   另外两个小 CSV 贡献的 652 条（两次 init 日志里的 200 + 450）。
+#   注意 wc -l 数出来的是「行数」不是「记录数」：正文含换行，kazinform 5,917 行
+#   其实只有 201 条记录，mofcom 3,621 行只有 451 条。
+KNOWN_HEADERS = {'title', 'date', 'content_text', 'content', 'desc', 'url',
+                 'content_html', 'tags', 'pics', 'create_time'}
+
+
+def _split_title(content):
+    """无表头归档语料没有独立标题列，尽力从正文里抽一个标题。
+
+    优先级：正文开头的 **加粗标题** > 首行；都抽不出就返回 None。
+    """
+    import re
+    s = (content or '').strip()
+    if not s:
+        return None
+    m = re.match(r'^\*\*(.{2,120}?)\*\*[ \t]*\n?', s)
+    if m:
+        return m.group(1).strip()
+    first = s.split('\n', 1)[0].strip().strip('*')
+    if not first:
+        return None
+    return first[:120]
+
+
+def _iter_news(p):
+    """按行产出 (title, content, date_str, create_time)，兼容带/不带表头两种 CSV。"""
+    with open_csv(p) as f:
+        rd = csv.reader(f)
+        first = next(rd, None)
+        if first is None:
+            return
+        head = [(c or '').strip().lower() for c in first]
+        if set(head) & KNOWN_HEADERS:
+            # ① 带表头：首行是表头，按列名取值
+            def pick(row, *names):
+                for nm in names:
+                    if nm in head:
+                        i = head.index(nm)
+                        if i < len(row):
+                            return (row[i] or '').strip()
+                return ''
+            for row in rd:
+                yield (pick(row, 'title'),
+                       pick(row, 'content_text', 'content'),
+                       pick(row, 'date'),
+                       pick(row, 'create_time'))
+        else:
+            # ② 无表头归档：首行也是数据，按列位置取值（0=id 1=正文 2=保留 3=日期）
+            for row in itertools.chain([first], rd):
+                content = (row[1] if len(row) > 1 else '').strip()
+                date_s = (row[3] if len(row) > 3 else '').strip()
+                yield (_split_title(content), content, date_s, None)
+
+
 def import_news(conn, args):
     files = sorted(glob.glob(os.path.join(NEWS_DIR, '*.csv')))
     if not files:
@@ -206,28 +275,27 @@ def import_news(conn, args):
         for p in files:
             n = 0
             batch = []
-            with open_csv(p) as f:
-                rd = csv.DictReader(f)
-                for row in rd:
-                    title = (row.get('title') or '').strip()
-                    content = (row.get('content_text') or row.get('content') or '').strip()
-                    if not title and not content:
-                        continue
-                    pub = parse_news_date(row.get('date'), row.get('create_time'))
-                    batch.append((title[:512] or None, content or None, pub))
-                    n += 1
-                    if len(batch) >= BATCH:
-                        cur.executemany(
-                            'INSERT INTO news_articles (title, content, publish_time) VALUES (%s,%s,%s)',
-                            batch)
-                        total += len(batch)
-                        batch = []
+            for title, content, date_s, create_time in _iter_news(p):
+                if not title and not content:
+                    continue
+                pub = parse_news_date(date_s, create_time)
+                batch.append((title[:512] or None, content or None, pub))
+                n += 1
+                if len(batch) >= BATCH:
+                    cur.executemany(
+                        'INSERT INTO news_articles (title, content, publish_time) VALUES (%s,%s,%s)',
+                        batch)
+                    total += len(batch)
+                    batch = []
             if batch:
                 cur.executemany(
                     'INSERT INTO news_articles (title, content, publish_time) VALUES (%s,%s,%s)',
                     batch)
                 total += len(batch)
             log('      %-52s %6d 行' % (os.path.basename(p), n))
+            if n == 0:
+                log('        ⚠ %s 解析出 0 条，请检查该文件是否为未知表头/列序'
+                    % os.path.basename(p))
     conn.commit()
     log('      新闻语料合计 %d 条' % total)
     return total
