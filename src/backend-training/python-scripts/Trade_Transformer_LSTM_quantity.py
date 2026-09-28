@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import argparse
 from datetime import datetime
 
@@ -19,7 +20,10 @@ from tqdm import tqdm
 import sys
 import io
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# line_buffering=True：默认的 TextIOWrapper 会在重定向到文件时块缓冲（8KB），
+# 全量训练要跑数小时，日志长时间不落盘会让人误以为进程卡死。
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8',
+                             line_buffering=True)
 
 
 # 解析命令行参数
@@ -47,6 +51,30 @@ args = parser.parse_args()
 #     10 线程 1567 ms/迭代   ·   4 线程 127 ms/迭代   ·   1 线程 176 ms/迭代
 # 即默认设置比 4 线程慢约 12 倍。可用 --threads 调整。
 torch.set_num_threads(args.threads)
+
+# =====================================================================
+# 随机性控制（--seed 必须真正生效）
+#
+# 原实现只在切分与抽样处用了 np.random.RandomState(args.seed)，模型权重初始化
+# （torch 默认全局 RNG）与 DataLoader(shuffle=True) 的洗牌都未播种。后果：
+# 同一份数据、同一个 --seed、同一套参数，两次运行的模型完全不同。
+#
+# 实测（进口-单价 / time / max_rows=12000 / 30 轮 / 同 seed=42 两次运行）：
+#     R2 = +0.0025   vs   R2 = +0.0719
+#     预测/真实标准差比 = 0.03  vs  0.96
+# 测试集完全一致（n=2398，真实均值 1022.19）。也就是说，此前所有单次冒烟的
+# R2 都是「一次抽样」，其运行间波动（约 ±0.04）大于多数组合之间的差异，
+# 不足以支撑「某组合能学会 / 某组合学不会」这类结论。
+#
+# 修复：在此处一次性播种 python / numpy / torch 三个 RNG，并把 DataLoader 的
+# 洗牌交给显式 Generator，使训练可复现。
+# 注意：CPU 多线程下个别归约算子的浮点累加顺序仍可能带来末位差异，但量级上
+# 不再是「换一个模型」。
+# =====================================================================
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+print(f"随机种子已固定: seed={args.seed} (python/numpy/torch + DataLoader)")
 
 # Step 1: 加载和预处理数据
 file_path = args.csv_path
@@ -334,7 +362,13 @@ _train_month = seq_ym[train_idx] % 100
 _test_month = seq_ym[test_idx] % 100
 _month_mean = {int(m): float(y_train[_train_month == m].mean())
                for m in np.unique(_train_month)}
-baseline_season = np.array([_month_mean.get(int(m), float(y_train.mean()))
+# 【性能】dict.get(key, default) 的 default 会被逐次求值：若把 float(y_train.mean())
+# 直接写在列表推导里，它会对 n_test 个元素各算一次全局均值，每次扫一遍训练集，
+# 复杂度退化为 O(n_test x n_train)。冒烟规模（万级）下无感，但出口全量约
+# 37 万测试序列 x 153 万训练序列 ≈ 5.8e11 次运算，实测会挂住数分钟以上，
+# 直接阻断 §6③ 的全量重训。故提到循环外。
+_grand_mean = float(y_train.mean())
+baseline_season = np.array([_month_mean.get(int(m), _grand_mean)
                             for m in _test_month])                     # 季节均值
 
 # 转换为PyTorch张量
@@ -348,7 +382,11 @@ y_test_tensor = torch.tensor(y_test, dtype=torch.float32)
 
 # 创建DataLoader
 train_dataset = torch.utils.data.TensorDataset(X_cat_train_tensor, X_cont_train_tensor, y_train_tensor)
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)  # 增大batch_size
+# 训练集的洗牌必须用显式播种的 Generator，否则 --seed 对训练无效
+_rng = torch.Generator()
+_rng.manual_seed(args.seed)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
+                          generator=_rng)  # 增大batch_size
 test_dataset = torch.utils.data.TensorDataset(X_cat_test_tensor, X_cont_test_tensor, y_test_tensor)
 test_loader = DataLoader(
     test_dataset,
