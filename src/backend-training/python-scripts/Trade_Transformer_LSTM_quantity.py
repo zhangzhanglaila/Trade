@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-import winsound
 from sklearn.metrics import r2_score
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -30,7 +29,24 @@ parser.add_argument('--model_output_path', type=str, required=True, help='模型
 parser.add_argument('--trade_type', type=str, required=True, choices=['in', 'out'], help='贸易类型：in(进口) 或 out(出口)')
 parser.add_argument('--target', type=str, required=True, choices=['price', 'quantity'], help='预测目标：price(单价) 或 quantity(数量)')
 parser.add_argument('--sound_file', type=str, default='', help='训练完成提示音文件路径（可选）')
+parser.add_argument('--split_mode', type=str, default='time',
+                    choices=['time', 'commodity'],
+                    help='切分协议：time=按时间切（默认，测已知商品的下一期预测）；'
+                         'commodity=按商品切（测对新商品的预测）')
+parser.add_argument('--test_ratio', type=float, default=0.2, help='测试集比例（默认 0.2）')
+parser.add_argument('--epochs', type=int, default=150, help='最大训练轮数（默认沿用脚本原值）')
+parser.add_argument('--max_rows', type=int, default=0, help='冒烟测试：只用约 N 行（0=全量）')
+parser.add_argument('--seed', type=int, default=42, help='随机种子（切分与抽样用）')
+parser.add_argument('--threads', type=int, default=4,
+                    help='PyTorch 的 CPU 线程数（默认 4）')
 args = parser.parse_args()
+
+# ⚠️ CPU 训练的线程数：默认 torch.get_num_threads() = 机器核数（本机 10），
+# 对这种小张量（batch 32 / 序列长 2 / d_model 128）反而会因 OpenMP 线程争用
+# 慢一个数量级。本机实测（同为 32x2x5 输入、20 次迭代平均）：
+#     10 线程 1567 ms/迭代   ·   4 线程 127 ms/迭代   ·   1 线程 176 ms/迭代
+# 即默认设置比 4 线程慢约 12 倍。可用 --threads 调整。
+torch.set_num_threads(args.threads)
 
 # Step 1: 加载和预处理数据
 file_path = args.csv_path
@@ -154,63 +170,170 @@ else:
     df['log_数量'] = np.log1p(df['数量'])
     target_cols_log = ['log_数量']
 
-# 标准化 log 变换后的目标变量
-scaler_y = StandardScaler()
-df[target_cols_log] = scaler_y.fit_transform(df[target_cols_log])
+# =====================================================================
+# 数据切分 与 特征缩放
+#
+# 【为什么必须先切分再 fit】原实现用全量数据 fit_transform 了 1 个 scaler_y、
+# 5 个 LabelEncoder、1 个 scaler_X，之后才切分 —— 测试集的均值/方差/类别集合
+# 参与了训练期特征的构造，属标准数据泄漏（见《模型评测报告》§3.3）。
+#
+# 【为什么不能用 train_test_split(shuffle=False)】原实现把每个商品的时间序列
+# 展开成样本后，按商品编码升序拼成一个大数组，再 shuffle=False 取后 20%，
+# 于是测试集几乎全是「商品编码较大」的商品。这些商品训练时从未出现，其
+# Embedding 行始终停在随机初值，模型等于在随机猜（同报告 §3.1）。实测真实
+# 数据上这类「冷启动」样本占测试集的 99.9% —— 所以单纯换真实数据重训并不能
+# 解决问题，必须先修切分。
+#
+# 本脚本提供两种切分协议（--split_mode），分别度量两种不同的能力，
+# 结论必须分开陈述，不能混为一谈：
+#   time      （默认）按时间切：目标的 数据年月 晚于切分点的序列进测试集。
+#             商品在训练期出现过，测的是「对已知商品的下一期预测」。
+#   commodity 按商品切：整个商品进测试集，测的是「对新商品的预测」。
+#             这正是原实现意外在做的事，保留下来便于对照。
+# =====================================================================
+seq_length = 2          # 历史窗口长度，必须与 app.py 的 seq_length 保持一致
+SPLIT_RATIO = args.test_ratio
 
-# 清理连续变量中的异常值
+# 冒烟测试用：按「商品」整组抽样，保证每个被选中商品的完整时间线都在，
+# 否则整组截断会人为制造出「序列不完整」的假象
+if args.max_rows and len(df) > args.max_rows:
+    _codes = df['商品编码'].astype(str)
+    _sizes = _codes.value_counts()
+    _order = _sizes.index.to_numpy().copy()
+    np.random.RandomState(args.seed).shuffle(_order)
+    _keep, _cum = [], 0
+    for _c in _order:
+        _keep.append(_c)
+        _cum += int(_sizes[_c])
+        if _cum >= args.max_rows:
+            break
+    df = df[_codes.isin(set(_keep))].reset_index(drop=True)
+    print(f"冒烟抽样：保留 {len(_keep)} 个商品 / {len(df)} 行（目标约 {args.max_rows} 行）")
+
+# 清理连续变量中的异常值，并丢弃含 NaN 的行。
+# 必须放在切分之前，否则切分点会落在脏数据上。
 for col in continuous_cols:
     df[col] = df[col].replace({'-': np.nan, '': np.nan}, regex=False)
     df[col] = pd.to_numeric(df[col], errors='coerce')
-
-# 删除含有 NaN 的行（包括类别、连续和目标变量）
 df.dropna(subset=categorical_cols + continuous_cols + target_cols_log, inplace=True)
+df = df[pd.to_numeric(df['数据年月'], errors='coerce').notna()].reset_index(drop=True)
+if len(df) == 0:
+    raise ValueError('清洗后数据为空，请检查 CSV 内容与列名映射')
 
-# 对类别变量做 Label Encoding
+# 留一份原始商品编码：LabelEncoder 会把「训练期未见过的类别」映射到同一个
+# 预留槽位，若拿编码后的值分组，commodity 协议下所有新商品会被并成一组。
+df['_orig_comm'] = df['商品编码'].astype(str)
+
+# 每个商品内部按时间先后排序，保证序列的时间顺序正确
+df = df.sort_values(['_orig_comm', 'year', 'month']).reset_index(drop=True)
+ym_all = df['数据年月'].astype('int64')
+
+if args.split_mode == 'time':
+    # 按「数据年月」的整体分位切；序列随后按自身目标的月份归属，
+    # 因此全部测试序列在时间上都晚于训练序列。
+    cutoff = int(np.quantile(ym_all.values, 1 - SPLIT_RATIO))
+    train_row_mask = (ym_all <= cutoff).to_numpy()
+    test_codes = None
+else:
+    cutoff = None
+    _codes = np.array(sorted(df['_orig_comm'].unique()))
+    np.random.RandomState(args.seed).shuffle(_codes)
+    _n_test = max(1, int(round(len(_codes) * SPLIT_RATIO)))
+    test_codes = set(_codes[:_n_test].tolist())
+    train_row_mask = ~df['_orig_comm'].isin(test_codes).to_numpy()
+
+if train_row_mask.sum() == 0:
+    raise ValueError('切分后训练行为空，请调小 --test_ratio 或换一种 --split_mode')
+
+print(f"切分协议: {args.split_mode}  切分点: {cutoff}  "
+      f"训练行 {int(train_row_mask.sum())} / 全部 {len(df)}")
+print(f"  商品总数: {df['_orig_comm'].nunique()}"
+      + (f"  测试集商品数: {len(test_codes)}" if test_codes is not None else ""))
+
+# ---- 只在训练集上 fit，再 transform 全量（消除数据泄漏）----
+df_train_rows = df[train_row_mask]
+
+scaler_y = StandardScaler().fit(df_train_rows[target_cols_log])
+df[target_cols_log] = scaler_y.transform(df[target_cols_log])
+
 label_encoders = {}
 for col in categorical_cols:
-    le = LabelEncoder()
-    df[col] = le.fit_transform(df[col].astype(str))  # 强制转字符串防止报错
+    le = LabelEncoder().fit(df_train_rows[col].astype(str))
     label_encoders[col] = le
+    _known = {c: i for i, c in enumerate(le.classes_)}
+    _unknown = len(le.classes_)        # 预留槽位：训练期未见过的类别
+    df[col] = df[col].astype(str).map(
+        lambda x, k=_known, u=_unknown: k.get(x, u)).astype(int)
 
-# 归一化连续变量（包括 year 和 month）
-scaler_X = StandardScaler()
-df[continuous_cols] = scaler_X.fit_transform(df[continuous_cols])
+scaler_X = StandardScaler().fit(df_train_rows[continuous_cols])
+df[continuous_cols] = scaler_X.transform(df[continuous_cols])
 
-# 按商品分组创建时间序列
-grouped = df.groupby('商品编码')
+# ---- 按商品分组创建时间序列，并记录每条序列的商品 / 目标月份 / 窗口末值 ----
 sequences = []
-seq_length = 2#历史窗口长度
+seq_comm = []
+seq_ym = []
+seq_prev_y = []          # 窗口最后一个目标值，供「上一期值」基线使用
 
-for name, group in grouped:
+for name, group in df.groupby('_orig_comm', sort=False):
     group = group.sort_values(['year', 'month'])
-    if len(group) < seq_length + 1:  # 确保有足够数据点
+    if len(group) < seq_length + 1:      # 数据点不够，跳过该商品
         continue
 
-    # 创建序列
     X_cat_group = group[categorical_cols].values
     X_cont_group = group[continuous_cols].values
-    y_group = group[target_cols_log].values
+    y_group = group[target_cols_log].values.reshape(-1)
+    ym_group = group['数据年月'].astype('int64').values
 
     for i in range(len(X_cat_group) - seq_length):
-        x_cat_seq = X_cat_group[i:i + seq_length]
-        x_cont_seq = X_cont_group[i:i + seq_length]
-        y_val = y_group[i + seq_length]
-        sequences.append((x_cat_seq, x_cont_seq, y_val))
+        sequences.append((X_cat_group[i:i + seq_length],
+                          X_cont_group[i:i + seq_length],
+                          y_group[i + seq_length]))
+        seq_comm.append(str(name))
+        seq_ym.append(int(ym_group[i + seq_length]))
+        seq_prev_y.append(float(y_group[i + seq_length - 1]))
 
-# 转换为数组
-if sequences:
-    X_cat, X_cont, y = zip(*sequences)
-    X_cat = np.array(X_cat)
-    X_cont = np.array(X_cont)
-    y = np.array(y)
+if not sequences:
+    raise ValueError("没有足够数据创建序列，请检查数据或减小 seq_length")
+
+X_cat = np.array([s[0] for s in sequences], dtype=np.int64)
+X_cont = np.array([s[1] for s in sequences], dtype=np.float64)
+y = np.array([s[2] for s in sequences], dtype=np.float64)
+seq_comm = np.array(seq_comm)
+seq_ym = np.array(seq_ym)
+seq_prev_y = np.array(seq_prev_y)
+
+# ---- 按协议把「序列」（而不是行）分到训练/测试 ----
+if args.split_mode == 'time':
+    test_seq_mask = seq_ym > cutoff
 else:
-    raise ValueError("没有足够数据创建序列，请检查数据或减小seq_length")
+    test_seq_mask = np.isin(seq_comm, list(test_codes))
 
-# 分割训练集和测试集（不打乱）
-X_cat_train, X_cat_test, X_cont_train, X_cont_test, y_train, y_test = train_test_split(
-    X_cat, X_cont, y, test_size=0.2, shuffle=False
-)
+train_idx = np.where(~test_seq_mask)[0]
+test_idx = np.where(test_seq_mask)[0]
+if len(train_idx) == 0 or len(test_idx) == 0:
+    raise ValueError(f'切分后训练/测试序列有空集（train={len(train_idx)}, '
+                     f'test={len(test_idx)}），请调整 --test_ratio 或换 --split_mode')
+
+# 冷启动统计：测试序列中「商品在训练集里没出现过」的比例。
+# time 协议下应接近 0；commodity 协议下按设计接近 100%（这正是原实现的问题）。
+train_comms = set(seq_comm[train_idx].tolist())
+cold_mask = np.array([c not in train_comms for c in seq_comm[test_idx]])
+print(f"  训练序列 {len(train_idx)} / 测试序列 {len(test_idx)}")
+print(f"  测试集中「训练期未见过的商品」: {int(cold_mask.sum())} / {len(test_idx)}"
+      f" ({cold_mask.mean() * 100:.1f}%)")
+
+X_cat_train, X_cont_train, y_train = X_cat[train_idx], X_cont[train_idx], y[train_idx]
+X_cat_test, X_cont_test, y_test = X_cat[test_idx], X_cont[test_idx], y[test_idx]
+
+# 朴素基线（全部在「标准化后的 log 空间」，评估段再还原到原始尺度）
+baseline_prev = seq_prev_y[test_idx]                                   # 上一期值
+baseline_global = np.full(len(test_idx), float(y_train.mean()))        # 全局均值
+_train_month = seq_ym[train_idx] % 100
+_test_month = seq_ym[test_idx] % 100
+_month_mean = {int(m): float(y_train[_train_month == m].mean())
+               for m in np.unique(_train_month)}
+baseline_season = np.array([_month_mean.get(int(m), float(y_train.mean()))
+                            for m in _test_month])                     # 季节均值
 
 # 转换为PyTorch张量
 X_cat_train_tensor = torch.tensor(X_cat_train, dtype=torch.long)
@@ -317,10 +440,9 @@ class LSTMTransformer(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 获取每个类别特征的唯一值数量
-num_embeddings_list = [df[col].nunique() for col in categorical_cols]
 
 model = LSTMTransformer(
-    num_embeddings_list=[df[col].nunique() for col in categorical_cols],
+    num_embeddings_list=[int(df[col].max()) + 1 for col in categorical_cols],
     continuous_dim=len(continuous_cols),
     model_dim=128,#输入维度大小
     hidden_size=128,#隐藏层大小
@@ -333,7 +455,7 @@ criterion = nn.MSELoss(reduction='mean')
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-epochs = 150
+epochs = args.epochs
 best_loss = float('inf')
 losses = []
 val_losses = []
@@ -400,7 +522,15 @@ torch.save(model.state_dict(), save_path + model_filename)
 
 # Step 5: 评估最佳模型
 print("开始验证...")
-model.load_state_dict(torch.load(save_path + model_filename))
+# 评估对象改为【早停保存的最佳模型】。原实现加载的是最后一个 epoch 的权重，
+# 而训练损失仍在下降、验证损失已不再改善，最后一个 epoch 恰恰是过拟合最重的
+# 那个（评测报告 §3.2）。
+if os.path.exists(checkpoint_path):
+    model.load_state_dict(torch.load(checkpoint_path))
+    print(f"已加载早停保存的最佳模型: {checkpoint_path}")
+else:
+    print(f"警告：未找到 {checkpoint_path}，回退到最后一个 epoch 的权重")
+    model.load_state_dict(torch.load(save_path + model_filename))
 model.eval()
 
 all_preds = []
@@ -446,6 +576,52 @@ log_filename = f'training_Trade_Transformer_{args.trade_type}_{args.target}.log'
 logging.basicConfig(filename=log_filename, level=logging.INFO)
 time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 logging.info(f"datetime:{time}, R2:{r2_q}, MSE:{mse_q}, MAE:{mae_q}")
+
+# =====================================================================
+# 朴素基线对照（《模型评测报告》§6.3）
+#
+# 本任务预测的是「同一商品的下一期单价/数量」，这类序列接近随机游走，
+# 即便模型完全正常，R² 也可能天然为负 —— 只看 R² 会系统性误判。
+# 因此「是否具备预测能力」必须用「模型 vs 基线」的相对表现来判定。
+# =====================================================================
+def _to_orig(x_scaled):
+    return np.expm1(scaler_y.inverse_transform(
+        np.asarray(x_scaled, dtype=np.float64).reshape(-1, 1)).ravel())
+
+true_o = np.asarray(y_true_unscaled).ravel()
+model_o = np.asarray(y_pred_unscaled).ravel()
+prev_o = _to_orig(baseline_prev)
+season_o = _to_orig(baseline_season)
+global_o = _to_orig(baseline_global)
+
+
+def _metrics(pred, name):
+    r2 = r2_score(true_o, pred)
+    mae = float(np.mean(np.abs(true_o - pred)))
+    denom = np.where(true_o == 0, np.nan, true_o)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        mape = float(np.nanmean(np.abs((true_o - pred) / denom)) * 100)
+    print(f"  {name:<26} R2={r2:>10.4f}   MAE={mae:>15.2f}   MAPE={mape:>8.2f}%")
+    return r2, mae, mape
+
+
+print(f"\n===== 模型 vs 朴素基线（测试集 n={len(true_o)}）=====")
+_res = {
+    '模型': _metrics(model_o, '模型'),
+    '上一期值(carry-forward)': _metrics(prev_o, '上一期值(carry-forward)'),
+    '季节均值': _metrics(season_o, '季节均值(同月训练均值)'),
+    '全局均值': _metrics(global_o, '全局均值(R2=0 参照)'),
+}
+
+print(f"\n  测试集中「训练期未见过的商品」占比: {cold_mask.mean() * 100:.1f}%")
+_verdict = '优于' if _res['模型'][0] > _res['上一期值(carry-forward)'][0] else '不优于'
+print(f"  结论：模型 R2 {_verdict}「上一期值」基线 —— 这才是判断是否具备预测能力的依据")
+logging.basicConfig(filename=log_filename, level=logging.INFO)
+logging.info(f"split_mode:{args.split_mode}, n_train:{len(train_idx)}, n_test:{len(test_idx)}, "
+             f"cold_ratio:{cold_mask.mean()}, model_r2:{_res['模型'][0]}, "
+             f"prev_r2:{_res['上一期值(carry-forward)'][0]}, "
+             f"season_r2:{_res['季节均值'][0]}, global_r2:{_res['全局均值'][0]}")
+
 
 
 # 打印部分样本
@@ -515,5 +691,8 @@ with open(save_path + f'label_encoders_{args.target}.pkl', 'wb') as f:
 print("✅ 模型和预处理器已成功保存！")
 # 同步播放（程序会暂停直到播放结束）
 if args.sound_file and os.path.exists(args.sound_file):
+    # winsound 是 Windows 专有模块；放在这里按需导入，
+    # 否则脚本在 Linux 上一启动就 ModuleNotFoundError（评测报告 §5 P1-3）
+    import winsound
     winsound.PlaySound(args.sound_file, winsound.SND_FILENAME)
 

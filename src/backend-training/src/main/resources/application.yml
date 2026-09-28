@@ -28,11 +28,15 @@ python:
     api-deploy: app.py
   
   # CSV 数据路径配置
+  # ⚠️ 必须指向【真实数据】，不要指回 src/backend-training/data/ 下的样例文件。
+  #    实测（《模型评测报告》§3.4）：那两份样例按 seq_length=2 只能生成 29 条训练
+  #    样本，是模型 R² 为负的直接原因之一；而且「进口/merged_input.csv」实为 xlsx
+  #    改了扩展名（文件头 50 4B 03 04），pandas.read_csv 无法解析。
   data:
     import-data:
-      csv-path: ${trade.home}/src/backend-training/data/进口/merged_input.csv
+      csv-path: ${trade.home}/data/05_运行_进出口CSV/进口/merged_output.csv
     export-data:
-      csv-path: ${trade.home}/src/backend-training/data/出口/merged_output.csv
+      csv-path: ${trade.home}/data/05_运行_进出口CSV/出口/merged_output.csv
   
   # 模型输出路径配置
   model:
