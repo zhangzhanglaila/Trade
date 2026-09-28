@@ -1240,13 +1240,15 @@ public class OntologyServiceImpl extends ServiceImpl<OntologyMapper, Ontology> i
         long tripleCount = graphRepository.getTripleCount(namedGraphUri);
         List<ClassInfo> classes = graphRepository.getClasses(namedGraphUri);
         List<PropertyInfo> properties = graphRepository.getProperties(namedGraphUri, null);
-        List<IndividualInfo> individuals = graphRepository.getIndividuals(namedGraphUri, null);
-        
-        log.info("getOntologyStats: classes={}, individuals={}, properties={}, triples={}", 
-                classes.size(), individuals.size(), properties.size(), tripleCount);
-        
-        // 实例总数
-        long individualCount = individuals.size();
+
+        // 实例总数改用 COUNT 查询，不再 getIndividuals(namedGraphUri, null) 全量拉取。
+        // 原因：真实图里约有 196 万实例，全量拉取要遍历整张图、为每条实例构造对象并
+        // 写一行日志，实测该接口因此数分钟不返回（并让日志文件暴涨到数百 MB）。
+        // 这里只需要一个数字，用 COUNT 即可，代价是秒级。
+        long individualCount = graphRepository.getIndividualCountByClass(namedGraphUri, null);
+
+        log.info("getOntologyStats: classes={}, individuals={}, properties={}, triples={}",
+                classes.size(), individualCount, properties.size(), tripleCount);
 
         return OntologyStats.builder()
                 .classCount(classes.size())

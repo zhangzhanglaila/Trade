@@ -439,10 +439,11 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
             queryBuilder.append("    OPTIONAL { ?individual <").append(RDFS.label.getURI()).append("> ?label } ");
             queryBuilder.append("    OPTIONAL { ?individual <").append(RDFS.comment.getURI()).append("> ?comment } ");
             queryBuilder.append("  } ");
-            queryBuilder.append("}");
-            
+            // 硬性限流：本图约有 196 万实例，不加 LIMIT 会让接口长时间不返回
+            queryBuilder.append("} LIMIT ").append(MAX_INDIVIDUALS);
+
             String queryString = queryBuilder.toString();
-            log.info("getIndividuals: SPARQL query: {}", queryString);
+            log.debug("getIndividuals: SPARQL query: {}", queryString);
             
             Query query = QueryFactory.create(queryString);
             try (QueryExecution qexec = QueryExecutionFactory.create(query, dataset)) {
@@ -462,7 +463,8 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
                     String typeUri = soln.contains("type") ? soln.getResource("type").getURI() : "";
                     String typeName = typeUri.isEmpty() ? "" : getLocalNameFromUri(typeUri);
                     
-                    log.info("getIndividuals: found individual: {} (type: {})", indUri, typeName);
+                    // 逐条日志必须降到 DEBUG：196 万条 INFO 会把日志文件写爆（实测数百 MB）
+                    log.debug("getIndividuals: found individual: {} (type: {})", indUri, typeName);
                     
                     IndividualInfo indInfo = IndividualInfo.builder()
                             .id(indUri)
@@ -581,7 +583,7 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
 
     @Override
     public long getIndividualCountByClass(String namedGraphUri, String classUri) {
-        if (namedGraphUri == null || classUri == null) {
+        if (namedGraphUri == null) {
             return 0;
         }
         
@@ -592,12 +594,23 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
                 return 0;
             }
             
-            String queryString = 
-                "SELECT (COUNT(?individual) AS ?count) WHERE { " +
-                "  GRAPH <" + namedGraphUri + "> { " +
-                "    ?individual a <" + classUri + "> . " +
-                "  } " +
-                "}";
+            // classUri 为空时统计「全图有 rdf:type 的资源数」。
+            // 本体统计接口只需要一个总数，用 COUNT 取即可；若为拿这个数字去调
+            // getIndividuals(graph, null)，会遍历全部约 196 万实例，接口数分钟不返回。
+            String queryString;
+            if (classUri == null || classUri.isEmpty()) {
+                queryString =
+                    "SELECT (COUNT(DISTINCT ?individual) AS ?count) WHERE { " +
+                    "  GRAPH <" + namedGraphUri + "> { ?individual a ?anyType } " +
+                    "}";
+            } else {
+                queryString =
+                    "SELECT (COUNT(?individual) AS ?count) WHERE { " +
+                    "  GRAPH <" + namedGraphUri + "> { " +
+                    "    ?individual a <" + classUri + "> . " +
+                    "  } " +
+                    "}";
+            }
             
             Query query = QueryFactory.create(queryString);
             try (QueryExecution qexec = QueryExecutionFactory.create(query, dataset)) {
@@ -1350,6 +1363,16 @@ public class JenaGraphRepositoryImpl implements GraphRepository {
     private static final int TYPE_ROW_LIMIT = 2000;
     /** 单条查询超时（毫秒） */
     private static final long QUERY_TIMEOUT_MS = 30_000L;
+    /**
+     * 实例列表查询的行数上限。
+     *
+     * <p>本图约有 196 万实例（`vocab#货物` 一种类型就占 196 万）。原实现无 LIMIT、
+     * 且对每条实例写一行 INFO 日志 —— 实测一次 `/ontology/{id}/stats` 调用会把
+     * 日志文件写掉几百 MB 并长时间不返回，连带拖垮后端。这里限流到 5000：
+     * 详情页只需要「看得到实例」，总量由 COUNT 查询单独给出（见
+     * {@link #getIndividualCountByClass} 传 null 的分支）。
+     */
+    private static final int MAX_INDIVIDUALS = 5000;
 
     /**
      * 把 URI 安全地写成 SPARQL 的 IRI 记号 {@code <...>}。
