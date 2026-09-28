@@ -616,13 +616,42 @@ _res = {
 }
 
 print(f"\n  测试集中「训练期未见过的商品」占比: {cold_mask.mean() * 100:.1f}%")
-_verdict = '优于' if _res['模型'][0] > _res['上一期值(carry-forward)'][0] else '不优于'
-print(f"  结论：模型 R2 {_verdict}「上一期值」基线 —— 这才是判断是否具备预测能力的依据")
+# ---- 结论判定 ----
+# 原实现只与「最弱」的朴素基线（上一期值）比较：commodity 协议下模型 R2=-0.6354
+# （深度为负、甚至不如全局均值），却仍打印「模型 R2 优于基线」，极易被误读成
+# 「模型具备预测能力」。故改为：与「最强」朴素基线比较，且 R2<=0 一律判为不达标。
+_m_r2 = _res['模型'][0]
+_naive = {k: v for k, v in _res.items() if k != '模型'}
+_best_name, _best_vals = max(_naive.items(), key=lambda kv: kv[1][0])
+_best_r2 = _best_vals[0]
+_edge = _m_r2 - _best_r2
+
+# 退化基线检测：季节均值若与全局均值几乎相同，说明按月分层没有带来区分度，
+# 此时「优于季节均值」不构成预测能力的证据。
+_season_gap = abs(_res['季节均值'][0] - _res['全局均值'][0])
+if _season_gap < 1e-3:
+    print(f"  ! 季节均值基线退化：R2 与全局均值仅差 {_season_gap:.5f}，按月分层无区分度，"
+          f"该基线不构成有效参照。")
+
+print(f"  最强朴素基线: {_best_name} (R2={_best_r2:.4f})")
+if _m_r2 <= 0:
+    print(f"  [负 R2] 模型 R2={_m_r2:.4f} <= 0，未跑赢「零信息」参照（全局均值 R2≈0）。")
+    print(f"          本结果不支持「模型具备可用预测能力」，不得用作结项指标。")
+elif _m_r2 <= _best_r2:
+    print(f"  [未超基线] 模型 R2={_m_r2:.4f} 未超过最强朴素基线 {_best_name}"
+          f"(R2={_best_r2:.4f})，差距 {_edge:+.4f}。")
+else:
+    print(f"  [优于最强基线] 模型 R2={_m_r2:.4f} > {_best_name}(R2={_best_r2:.4f})，"
+          f"优势 {_edge:+.4f}。")
+    print(f"          注意：优势仅 {_edge:+.4f}，是否具备业务价值须对照验收门槛，"
+          f"不能仅凭「优于基线」下结论。")
+
 logging.basicConfig(filename=log_filename, level=logging.INFO)
 logging.info(f"split_mode:{args.split_mode}, n_train:{len(train_idx)}, n_test:{len(test_idx)}, "
              f"cold_ratio:{cold_mask.mean()}, model_r2:{_res['模型'][0]}, "
              f"prev_r2:{_res['上一期值(carry-forward)'][0]}, "
-             f"season_r2:{_res['季节均值'][0]}, global_r2:{_res['全局均值'][0]}")
+             f"season_r2:{_res['季节均值'][0]}, global_r2:{_res['全局均值'][0]}, "
+             f"best_naive:{_best_name}, best_naive_r2:{_best_r2}, edge_vs_best:{_edge}")
 
 
 
