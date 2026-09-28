@@ -128,18 +128,34 @@ public class TradeMethodStatsServiceImpl extends ServiceImpl<TradeMethodStatsMap
     @Override
     public List<Map<String, Object>> getTradeMethodRatio(Integer year, Integer month, String country) {
         // 1. 查询符合条件的贸易方式金额数据
-        QueryWrapper<TradeMethodStats> queryWrapper = new QueryWrapper<>();
-        queryWrapper.select("trade_method", "SUM(trade_amount) as total_amount")
-                .eq("stat_year", year)
-                .eq("stat_month", month);
+        List<Map<String, Object>> methodAmounts = queryMethodAmounts(year, month, country);
 
-        // 按国家筛选（如果有）
-        if (StringUtils.hasText(country)) {
-            queryWrapper.eq("country_name", country);
+        // 1b. 指定年月没有数据时，回退到「最近一个有数据的年月」。
+        //
+        //     背景：Controller 传进来的是 LocalDate.now()（当前为 2026-09），而库里的
+        //     贸易数据是历史快照（实测最新为 2025-03）。不回退则查询必然为空，
+        //     且下面第 2 步对空集合 reduce 得到 ZERO，接口恒返回 []，大屏「贸易方式
+        //     占比」因此永远空着。两参版 getTradeMethodRatio(year, month) 本来就有
+        //     这段回退逻辑，此处补齐以保持一致。
+        if (methodAmounts == null || methodAmounts.isEmpty()) {
+            Map<String, Object> latest = baseMapper.selectMaps(new QueryWrapper<TradeMethodStats>()
+                    .select("stat_year", "stat_month")
+                    .orderByDesc("stat_year", "stat_month")
+                    .last("LIMIT 1")).stream().findFirst().orElse(null);
+            if (latest != null && latest.get("stat_year") != null) {
+                Integer latestYear = Integer.valueOf(latest.get("stat_year").toString());
+                Integer latestMonth = Integer.valueOf(latest.get("stat_month").toString());
+                List<Map<String, Object>> fallback = queryMethodAmounts(latestYear, latestMonth, country);
+                if (fallback != null && !fallback.isEmpty()) {
+                    // 如实告知前端本组数据实际取自哪个月，避免被误读为「本月数据」
+                    for (Map<String, Object> m : fallback) {
+                        m.put("statYear", latestYear);
+                        m.put("statMonth", latestMonth);
+                    }
+                    methodAmounts = fallback;
+                }
+            }
         }
-        queryWrapper.groupBy("trade_method");
-
-        List<Map<String, Object>> methodAmounts = baseMapper.selectMaps(queryWrapper);
 
         // 2. 计算总金额
         BigDecimal total = methodAmounts.stream()
@@ -160,6 +176,22 @@ public class TradeMethodStatsServiceImpl extends ServiceImpl<TradeMethodStatsMap
         }
 
         return methodAmounts;
+    }
+
+    /**
+     * 按年月（可选国家）聚合贸易方式金额。
+     * 抽出来供「指定年月」与「回退到最近有数据的年月」两条路径复用。
+     */
+    private List<Map<String, Object>> queryMethodAmounts(Integer year, Integer month, String country) {
+        QueryWrapper<TradeMethodStats> queryWrapper = new QueryWrapper<>();
+        queryWrapper.select("trade_method", "SUM(trade_amount) as total_amount")
+                .eq("stat_year", year)
+                .eq("stat_month", month);
+        if (StringUtils.hasText(country)) {
+            queryWrapper.eq("country_name", country);
+        }
+        queryWrapper.groupBy("trade_method");
+        return baseMapper.selectMaps(queryWrapper);
     }
 }
 

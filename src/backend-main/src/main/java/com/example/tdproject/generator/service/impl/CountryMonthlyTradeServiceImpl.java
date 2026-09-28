@@ -89,18 +89,22 @@ public class CountryMonthlyTradeServiceImpl extends ServiceImpl<CountryMonthlyTr
 
     @Override
     public List<CountryMonthlyTrade> getLast12MonthsData(String country) {
-        // 1. 计算时间范围（近12个月）
-        LocalDate now = LocalDate.now();
-        LocalDate twelveMonthsAgo = now.minusMonths(11); // 包含当前月，共12个月
+        // 时间基准改为「数据中实际最新的年月」，而不是 LocalDate.now()。
+        //
+        // 为什么：库里的贸易数据是一份历史快照（实测最新到 2025-03），而服务器当前
+        // 系统时间为 2026-09。若按系统时钟推导窗口（2025-10 ~ 2026-09），窗口内
+        // 一条数据都没有，接口恒返回空数组 —— 前端「近 12 个月」曲线因此全空。
+        // 改为以数据最新月份回溯 11 个月，含义变为「数据最新的 12 个月」。
+        // 这不伪造任何数据，只是把基准从「机器时钟」换成「数据自身的时间」。
+        LocalDate anchor = resolveDataAnchorMonth();
+        LocalDate from = anchor.minusMonths(11);
+        int fromKey = from.getYear() * 100 + from.getMonthValue();
+        int toKey = anchor.getYear() * 100 + anchor.getMonthValue();
 
-        // 2. 构建查询条件
+        // 2. 构建查询条件（先用年份收窄，月份边界在 Java 侧精确过滤）
         QueryWrapper<CountryMonthlyTrade> queryWrapper = new QueryWrapper<>();
-        queryWrapper.ge("year", twelveMonthsAgo.getYear())
-                .and(qw -> qw.ge("month", twelveMonthsAgo.getMonthValue())
-                        .or().gt("year", twelveMonthsAgo.getYear()))
-                .le("year", now.getYear())
-                .and(qw -> qw.le("month", now.getMonthValue())
-                        .or().lt("year", now.getYear()));
+        queryWrapper.ge("year", from.getYear())
+                .le("year", anchor.getYear());
 
         // 3. 按国家筛选（如果有）
         if (StringUtils.hasText(country)) {
@@ -112,6 +116,15 @@ public class CountryMonthlyTradeServiceImpl extends ServiceImpl<CountryMonthlyTr
 
         // 5. 查询原始数据
         List<CountryMonthlyTrade> originalData = list(queryWrapper);
+
+        // 5b. 月份边界精确过滤（本表仅数百行，Java 侧过滤开销可忽略）
+        originalData.removeIf(t -> {
+            if (t.getYear() == null || t.getMonth() == null) {
+                return true;
+            }
+            int key = t.getYear() * 100 + t.getMonth();
+            return key < fromKey || key > toKey;
+        });
 
         // 6. 按年月汇总数据（同一月份不同国家的数据求和）
         Map<String, CountryMonthlyTrade> aggregatedData = new TreeMap<>();
@@ -142,6 +155,25 @@ public class CountryMonthlyTradeServiceImpl extends ServiceImpl<CountryMonthlyTr
 
         // 7. 转换为列表返回
         return new ArrayList<>(aggregatedData.values());
+    }
+
+    /**
+     * 取「数据中实际最新的年月」作为时间基准（当月 1 号）。
+     *
+     * <p>库里这份贸易数据是历史快照（实测最新到 2025-03），而机器时钟是 2026-09。
+     * 用机器时钟当基准会让「近 12 个月」永远落在没有数据的区间。表为空或字段
+     * 异常时退回系统当前月，保证接口不会因此抛异常。
+     */
+    private LocalDate resolveDataAnchorMonth() {
+        CountryMonthlyTrade latest = getOne(new QueryWrapper<CountryMonthlyTrade>()
+                .select("year", "month")
+                .orderByDesc("year", "month")
+                .last("LIMIT 1"));
+        if (latest != null && latest.getYear() != null && latest.getMonth() != null
+                && latest.getMonth() >= 1 && latest.getMonth() <= 12) {
+            return LocalDate.of(latest.getYear(), latest.getMonth(), 1);
+        }
+        return LocalDate.now().withDayOfMonth(1);
     }
 }
 
