@@ -559,7 +559,11 @@ public class TradeDataQueryService {
                         .append(safe(latest.getUnit()).isEmpty() ? "" : " 人民币/" + safe(latest.getUnit()))
                         .append("\n");
             }
-            if (target == null) {
+            // 金额不只 target==null 时给：问「单价」的用户同样需要「数量×单价=金额」
+            // 的落点（如「20250 千克对应多少人民币」被抽成 target=price，
+            // 只给 18.1 元/千克而不给 366,557 人民币，等于没答到点上）。
+            // 该金额是这组条件下 SUM(人民币) 的库内真实值，不是估算。
+            if (target == null || "price".equals(target)) {
                 sb.append("· 金额：").append(fmt(rmb)).append(" 人民币\n");
             }
         }

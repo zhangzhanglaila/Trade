@@ -87,8 +87,9 @@ public class AiChatController {
             // ---------------- 历史数据查询 ----------------
             if (IntentRouter.ROUTE_DATA_QUERY.equalsIgnoreCase(route)) {
                 var slots = intent.getPredictSlots();
+                String qTradeType = slots != null ? slots.getTradeType() : null;
                 DataQueryResult data = tradeDataQueryService.query(
-                        slots != null ? slots.getTradeType() : null,
+                        qTradeType,
                         slots != null ? slots.getTarget() : null,
                         slots != null ? slots.getYear() : null,
                         slots != null ? slots.getMonth() : null,
@@ -96,6 +97,37 @@ public class AiChatController {
                         slots != null ? slots.getProductName() : null,
                         slots != null ? slots.getTradeMode() : null,
                         slots != null ? slots.getRegisterName() : null);
+
+                // ---- 方向自动重试 ----
+                // 问题没提「进口/出口」时，规则层按约定不猜方向；此时方向多半来自
+                // LLM 槽位抽取的猜测（如「千克对应多少人民币」被猜成 in）。
+                // 若该方向查不到数据而另一方向有 —— 直接回「库里没有」是答非所问，
+                // 拿另一方向再查一次，命中则在答案开头注明实际采用的方向。
+                // 仅在「问题文本本身不含方向词」时才重试：用户明说了进口，
+                // 查不到就该如实说没有（或给候选建议），不能悄悄换成出口的数。
+                boolean emptyHit = data.getRows() != null && data.getRows().isEmpty()
+                        && data.getSummary() != null && data.getSummary().startsWith("库里没有");
+                boolean textHasDirection = req.getText() != null
+                        && (req.getText().contains("进口") || req.getText().contains("出口")
+                            || req.getText().contains("外销") || req.getText().contains("出海"));
+                if (emptyHit && !textHasDirection && qTradeType != null) {
+                    String other = "in".equals(qTradeType) ? "out" : "in";
+                    DataQueryResult retry = tradeDataQueryService.query(
+                            other,
+                            slots != null ? slots.getTarget() : null,
+                            slots != null ? slots.getYear() : null,
+                            slots != null ? slots.getMonth() : null,
+                            slots != null ? slots.getTradePartnerName() : null,
+                            slots != null ? slots.getProductName() : null,
+                            slots != null ? slots.getTradeMode() : null,
+                            slots != null ? slots.getRegisterName() : null);
+                    if (retry.getRows() != null && !retry.getRows().isEmpty()) {
+                        String dirCn = "out".equals(other) ? "出口" : "进口";
+                        data = retry;
+                        data.setSummary("（问题未指明进出口方向，已按「" + dirCn
+                                + "」查得。）\n\n" + retry.getSummary());
+                    }
+                }
 
                 return Result.build(AiChatResponse.builder()
                         .route(IntentRouter.ROUTE_DATA_QUERY)
