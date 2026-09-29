@@ -98,11 +98,20 @@ public class AiChatController {
                 if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
                     var slots = intent.getPredictSlots();
                     List<String> hints = collectPredictHints(slots);
-                    boolean productUnresolved = slots != null
-                            && !isBlank(slots.getProductName())
-                            && !isBlank(slots.getTradeType())
-                            && !tradeDataQueryService.productExists(
-                                    slots.getTradeType(), slots.getProductName());
+                    // 商品名核对：用户常写简称（「粒面剖层蓝湿牛皮」→ 库里是「全粒面
+                    // 未剖层及粒面剖层蓝湿牛皮」）或俗称。能解析到库中规范名/品类时，
+                    // 直接替换成规范名继续预测，而不是当成「缺商品名称」拦下来。
+                    boolean productUnresolved = false;
+                    if (slots != null && !isBlank(slots.getProductName())
+                            && !isBlank(slots.getTradeType())) {
+                        String resolved = tradeDataQueryService.resolveProductName(
+                                slots.getTradeType(), slots.getProductName());
+                        if (resolved == null) {
+                            productUnresolved = true;
+                        } else {
+                            slots.setProductName(resolved);
+                        }
+                    }
                     if (!hints.isEmpty() || productUnresolved) {
                         if (hints.isEmpty() && productUnresolved) {
                             hints.add("商品名称");
@@ -168,15 +177,19 @@ public class AiChatController {
         if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
             var slots = intent.getPredictSlots();
             List<String> hints = collectPredictHints(slots);
-            // 槽位即便齐全，商品名也可能是俗称（如「奶制品」），库里并无这个
-            // 精确名称。若不拦截，会把俗称原样传给 Flask，得到 404「组合无历史数据」，
-            // 用户只看到一句冷冰冰的报错，不知道该怎么改。这里在调预测前先核对
-            // 商品名是否精确存在于库中，不存在就转入引导、给出规范名候选。
-            boolean productUnresolved = slots != null
-                    && !isBlank(slots.getProductName())
-                    && !isBlank(slots.getTradeType())
-                    && !tradeDataQueryService.productExists(
-                            slots.getTradeType(), slots.getProductName());
+            // 商品名核对：简称/俗称能解析到库中规范名时直接替换继续预测，
+            // 而不是当成「缺商品名称」拦下（详见 chatStream 分支注释）。
+            boolean productUnresolved = false;
+            if (slots != null && !isBlank(slots.getProductName())
+                    && !isBlank(slots.getTradeType())) {
+                String resolved = tradeDataQueryService.resolveProductName(
+                        slots.getTradeType(), slots.getProductName());
+                if (resolved == null) {
+                    productUnresolved = true;
+                } else {
+                    slots.setProductName(resolved);
+                }
+            }
             if (!hints.isEmpty() || productUnresolved) {
                 if (hints.isEmpty() && productUnresolved) {
                     hints.add("商品名称");

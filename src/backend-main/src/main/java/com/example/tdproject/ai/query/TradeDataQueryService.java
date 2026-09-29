@@ -667,6 +667,23 @@ public class TradeDataQueryService {
     }
 
     /**
+     * 把用户的商品名解析成库中规范名，供预测直接使用。
+     *
+     * <p>用户常写简称（如「粒面剖层蓝湿牛皮」，库里实际是「全粒面未剖层及粒面剖层
+     * 蓝湿牛皮」）。预测需要精确到单一商品（Flask 模型按精确商品组合训练），因此
+     * 只接受能唯一化到某个规范名的输入：
+     *   精确命中 / 唯一 LIKE 命中 → 返回规范名；
+     *   品类俗称（「奶制品」→ 乳及奶油类，命中多件商品）无法唯一化，返回 null，
+     *   由调用方转入引导、给出具体候选让用户挑一件。</p>
+     */
+    public String resolveProductName(String tradeType, String input) {
+        String tt = normalizeTradeType(tradeType);
+        if (tt == null || blankToNull(input) == null) return null;
+        Resolved r = resolveProduct(table(tt), input.trim());
+        return r.value;
+    }
+
+    /**
      * 商品名的相近候选；精确命中时返回空列表。
      * 供「预测缺槽位」的引导使用 —— 用户写「丝绸」这类俗称时，
      * 与其让他反复猜，不如直接把库里的规范商品名摆出来。
