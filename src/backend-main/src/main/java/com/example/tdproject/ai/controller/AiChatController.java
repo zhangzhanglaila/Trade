@@ -39,6 +39,22 @@ public class AiChatController {
             debug.put("intent", intent);
 
             if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
+                // 防御：即便路由把它判成预测，槽位也可能不完整（用户只说了「预测一下」
+                // 而没给任何实体）。与其把 predict(null) 的异常抛给前端，不如返回一句
+                // 能照着补全的提示。槽位补齐本身在 IntentRouter.mergeSlots 里完成。
+                if (intent.getPredictSlots() == null) {
+                    return Result.build(AiChatResponse.builder()
+                            .route(IntentRouter.ROUTE_PREDICT)
+                            .answer("已识别为「贸易预测」问题，但没能从提问里取到足够的槽位。"
+                                    + "请补充：贸易伙伴（如 哈萨克斯坦）、商品名称、贸易方式"
+                                    + "（如 一般贸易）、境内注册地（如 新疆维吾尔自治区），"
+                                    + "并说明要预测进口还是出口、单价还是数量。")
+                            .predictResult(null)
+                            .sources(null)
+                            .debugInfo(debug)
+                            .build());
+                }
+
                 var predict = predictionService.predict(intent.getPredictSlots());
                 String answer = buildPredictAnswer(predict);
 
