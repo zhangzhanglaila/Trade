@@ -49,3 +49,6 @@ ENV/
 *.csv
 !/data/**/*.csv
 
+
+# 模型产物替换时留下的回滚备份目录（含旧 scaler / encoders / app.py，不入库）
+_backup_*/
