@@ -27,12 +27,13 @@ import java.util.Map;
 /**
  * 智能问答统一入口。
  *
- * <h3>四条路由</h3>
+ * <h3>五条路由</h3>
  * <ul>
  *   <li>{@code DATA_QUERY} —— 查已经发生的历史数据（新增）；</li>
  *   <li>{@code PREDICT} —— 预测未来，槽位不齐时给「可照做」的引导；</li>
  *   <li>{@code RAG_NEWS} —— 语料检索问答；</li>
- *   <li>{@code CHITCHAT} —— 闲聊 / 问能力，给出能力说明。</li>
+ *   <li>{@code SCOPE} —— 「能访问哪些数据」，答案从库里现算；</li>
+ *   <li>{@code CHITCHAT} —— 闲聊 / 问能力，给出能力说明（含动态数据范围）。</li>
  * </ul>
  */
 @Slf4j
@@ -100,6 +101,20 @@ public class AiChatController {
                         .route(IntentRouter.ROUTE_DATA_QUERY)
                         .answer(data.getSummary())
                         .dataQuery(data)
+                        .sources(null)
+                        .predictResult(null)
+                        .debugInfo(debug)
+                        .build());
+            }
+
+            // ---------------- 数据范围（能访问哪些数据） ----------------
+            // 回答从库里现算（伙伴清单 / 时间范围 / 记录数 / 商品数），不是模板。
+            // 此前这类问题落到 CHITCHAT，拿到的是一段写死的能力说明，
+            // 里面既没有国家清单、日期也是硬编码，属于答非所问。
+            if (IntentRouter.ROUTE_SCOPE.equalsIgnoreCase(route)) {
+                return Result.build(AiChatResponse.builder()
+                        .route(IntentRouter.ROUTE_SCOPE)
+                        .answer(tradeDataQueryService.scopeAnswer())
                         .sources(null)
                         .predictResult(null)
                         .debugInfo(debug)
@@ -295,8 +310,12 @@ public class AiChatController {
                 + "2. 预测未来 —— 例如「预测哈萨克斯坦铜矿砂及其精矿、一般贸易、"
                 + "新疆维吾尔自治区的下个月进口单价」\n"
                 + "3. 新闻问答 —— 例如「最近有哪些关于哈萨克斯坦的新闻」\n\n"
-                + "说明：历史数据覆盖 2015-01 ~ 2025-03；预测需要贸易伙伴、商品名称、"
-                + "贸易方式、境内注册地四项齐全，缺哪项我会告诉你库里实际有哪些可选值。";
+                // 数据范围改为从库里现算。此前这里把「覆盖 2015-01 ~ 2025-03」
+                // 硬编码在字符串里，且从不提有哪些国家，用户问「有什么国家的数据
+                // 可以访问」就得到一段答非所问的话。
+                + "**可访问的数据范围**：" + tradeDataQueryService.scopeSummary() + "\n\n"
+                + "预测需要贸易伙伴、商品名称、贸易方式、境内注册地四项齐全，"
+                + "缺哪项我会告诉你库里实际有哪些可选值。";
     }
 
     // =================================================================

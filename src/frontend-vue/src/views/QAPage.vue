@@ -312,6 +312,7 @@ const ROUTE_LABELS = {
   PREDICT: '贸易预测',
   DATA_QUERY: '历史数据查询',
   RAG_NEWS: '新闻问答',
+  SCOPE: '数据范围',
   CHITCHAT: '助手说明'
 }
 
@@ -319,6 +320,7 @@ const ROUTE_COLORS = {
   PREDICT: 'blue',
   DATA_QUERY: 'green',
   RAG_NEWS: 'purple',
+  SCOPE: 'cyan',
   CHITCHAT: 'default'
 }
 
@@ -454,6 +456,20 @@ function buildPayload(text) {
   return payload
 }
 
+/**
+ * 「正在深度思考」的最短停留时长。
+ *
+ * 不是为了拖慢接口，而是为了让占位**看得见**：闲聊类问题命中规则、不调模型，
+ * 后端 7ms 就返回，占位气泡一闪而过，用户的主观感受就是「根本没这个提示」。
+ * 真正耗时的问答（RAG 约 1.5s、预测更久）只会被补很少的一段甚至不补。
+ */
+const THINKING_MIN_MS = 450
+
+function holdThinking(t0) {
+  const rest = THINKING_MIN_MS - (Date.now() - t0)
+  return rest > 0 ? new Promise((r) => setTimeout(r, rest)) : Promise.resolve()
+}
+
 async function send() {
   const text = inputText.value.trim()
   if (!text || sending.value) return
@@ -463,10 +479,13 @@ async function send() {
 
   sending.value = true
   scrollToBottom()
+  const t0 = Date.now()
   try {
     const data = await chat(buildPayload(text))
+    await holdThinking(t0)
     pushAssistant(data?.answer || '（无回答）', data)
   } catch (e) {
+    await holdThinking(t0)
     const msg = e?.message || '调用失败'
     message.error(msg)
     pushAssistant(`调用失败：${msg}`)

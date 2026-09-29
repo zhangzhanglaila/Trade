@@ -23,6 +23,8 @@ import java.util.regex.Pattern;
  *   <li>{@link #ROUTE_DATA_QUERY} —— 查<b>已经发生</b>的历史数据（「某年某月实际是多少」）；</li>
  *   <li>{@link #ROUTE_RAG_NEWS} —— 新闻/背景/原因/有哪些等需要从语料检索回答的问题；</li>
  *   <li>{@link #ROUTE_CHITCHAT} —— 打招呼、闲聊、问能力、与贸易无关的问题。</li>
+ *   <li>{@link #ROUTE_SCOPE} —— 问「能访问哪些数据」（有哪些国家 / 数据覆盖到哪）。
+ *       只走规则，不进 LLM 四分类。</li>
  * </ul>
  *
  * <h3>修复记录（为什么会有这一版）</h3>
@@ -46,6 +48,15 @@ public class IntentRouter {
     public static final String ROUTE_RAG_NEWS = "RAG_NEWS";
     public static final String ROUTE_DATA_QUERY = "DATA_QUERY";
     public static final String ROUTE_CHITCHAT = "CHITCHAT";
+
+    /**
+     * 「能访问哪些数据」。
+     *
+     * <p>刻意<b>只走规则、不进 LLM 兜底的四分类提示词</b>：这条路由的判定条件足够
+     * 明确，改提示词反而会扰动已有四类的分类行为。即便规则漏判，问题落到
+     * CHITCHAT，其能力说明里也已带上动态数据范围，不会答非所问。</p>
+     */
+    public static final String ROUTE_SCOPE = "SCOPE";
 
     /** 「未来」信号 —— 只有出现这些词才算预测意图。 */
     private static final String[] FORECAST_KEYWORDS = {
@@ -77,6 +88,17 @@ public class IntentRouter {
     private static final String[] CAPABILITY_WORDS = {
             "你是谁", "你叫什么", "你能做什么", "你能干什么", "你会什么", "你支持什么",
             "怎么用", "使用说明", "帮助文档"
+    };
+
+    /** 「能访问哪些数据」的三类信号词，需同时命中才成路由（见 {@link #isScopeQuestion}）。 */
+    private static final String[] SCOPE_WHICH = {
+            "哪些", "什么", "多少", "范围", "覆盖", "支持", "包含"
+    };
+    private static final String[] SCOPE_OBJECT = {
+            "数据", "语料", "资料", "国家", "地区", "国别", "贸易伙伴"
+    };
+    private static final String[] SCOPE_ACCESS = {
+            "访问", "能查", "可以查", "获取", "覆盖", "包含", "看得到", "有"
     };
 
     private static final Pattern YM_YEAR = Pattern.compile("20\\d{2}\\s*年?");
@@ -147,7 +169,8 @@ public class IntentRouter {
         debug.put("stage", "rule");
         debug.put("ruleRoute", ruleRoute);
 
-        if (ROUTE_RAG_NEWS.equals(ruleRoute) || ROUTE_CHITCHAT.equals(ruleRoute)) {
+        if (ROUTE_RAG_NEWS.equals(ruleRoute) || ROUTE_CHITCHAT.equals(ruleRoute)
+                || ROUTE_SCOPE.equals(ruleRoute)) {
             return IntentResult.builder()
                     .route(ruleRoute)
                     .ragFilters(filters(req))
@@ -207,6 +230,11 @@ public class IntentRouter {
         // ① 闲聊 / 能力询问
         if (isChitchat(t)) return ROUTE_CHITCHAT;
 
+        // ①-2 问「能访问哪些数据」
+        //     必须早于检索：这类问法常含「哪些 / 什么」，继续往下会被
+        //     RAG_KEYWORDS 里的「哪些」劫持成新闻检索（此前就是这么落到 LLM 的）。
+        if (isScopeQuestion(t)) return ROUTE_SCOPE;
+
         // ② 前瞻信号 → 预测
         for (String kw : FORECAST_KEYWORDS) {
             if (t.contains(kw)) return ROUTE_PREDICT;
@@ -241,6 +269,26 @@ public class IntentRouter {
             }
         }
         return false;
+    }
+
+    /**
+     * 是否在问「能访问哪些数据」。
+     *
+     * <p>三个条件必须<b>同时</b>成立，单看任一个都会大面积误伤：</p>
+     * <ul>
+     *   <li>「哪些 / 什么」几乎出现在所有检索式问句里；</li>
+     *   <li>「数据」也常出现在正常查数据的句子里；</li>
+     *   <li>「有」是最高频的字。</li>
+     * </ul>
+     *
+     * <p>实测：「有什么国家的数据可以访问」→命中；「你好」→不命中；
+     * 「2025年1月哈萨克斯坦的出口数量是多少」→不命中（没有数据/国家类对象）；
+     * 「最近有哪些关于哈萨克斯坦的新闻」→不命中（同上）。</p>
+     */
+    private boolean isScopeQuestion(String t) {
+        return containsAny(t, SCOPE_WHICH)
+                && containsAny(t, SCOPE_OBJECT)
+                && containsAny(t, SCOPE_ACCESS);
     }
 
     private boolean containsAny(String t, String[] kws) {

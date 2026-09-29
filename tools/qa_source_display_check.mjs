@@ -67,12 +67,17 @@ function loadHelpers() {
     const DOMPurifyDefault = { sanitize: (h) => h, __isStub: true }
   `
 
-  const sandbox = { __MarkdownItReal: MarkdownItReal }
+  const sandbox = {
+    __MarkdownItReal: MarkdownItReal,
+    // 真 setTimeout 传进去，这样 holdThinking 的最短停留是可以被真的量出来的
+    setTimeout: (fn, ms) => setTimeout(fn, ms)
+  }
   vm.createContext(sandbox)
   vm.runInContext(`${stubs}\n${code}\n
     ;globalThis.__probe = {
       primaryCount, primarySources, restSources, restHeader, sourceNote,
       sourceList, DEFAULT_SOURCE_ROWS, renderMd,
+      THINKING_MIN_MS, holdThinking, ROUTE_LABELS,
     };
   `, sandbox, { filename: 'QAPage.script.js' })
   return sandbox.__probe
@@ -226,6 +231,24 @@ check(TPL.includes('正在深度思考'), '模板里有「正在深度思考」�
 check(/v-if="sending"[\s\S]{0,300}正在深度思考/.test(TPL), '该占位由 sending 状态驱动')
 check(TPL.includes('v-html="renderMd(m.text)"'), '正文改用 v-html 走 renderMd()')
 check(!/\{\{\s*m\.text\s*\}\}/.test(TPL), '已移除直接插值的 {{ m.text }}（原缺陷点）')
+
+// 光有占位还不够 —— 闲聊类问题命中规则、不调模型，后端 7ms 就返回，
+// 占位会一闪而过，用户主观感受仍是「没有这个提示」。所以要量最短停留。
+console.log('-'.repeat(74))
+const t0 = Date.now()
+await P.holdThinking(t0)
+const waited = Date.now() - t0
+console.log('THINKING_MIN_MS = %s，接口立即返回时实际停留 %s ms', P.THINKING_MIN_MS, waited)
+check(P.THINKING_MIN_MS >= 300, '最短停留时长足够被人眼感知（≥300ms）')
+check(waited >= P.THINKING_MIN_MS, '秒回的请求会被补足到最短停留时长（否则占位看不见）')
+
+const t1 = Date.now()
+await P.holdThinking(t1 - 5000)
+const extra = Date.now() - t1
+console.log('已耗时 5000ms 的请求被额外延迟 %s ms', extra)
+check(extra < 50, '已经等够久的请求不再补延迟（不会拖慢正常问答）')
+
+check(P.ROUTE_LABELS.SCOPE === '数据范围', 'SCOPE 路由有中文标签，不会把内部路由名直接显示给用户')
 
 console.log('-'.repeat(74))
 console.log(bad === 0 ? '全部通过' : `存在 ${bad} 项失败`)

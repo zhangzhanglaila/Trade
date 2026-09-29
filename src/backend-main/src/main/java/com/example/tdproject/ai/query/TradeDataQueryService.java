@@ -7,7 +7,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
+import jakarta.annotation.PostConstruct;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 中哈贸易历史数据查询。
@@ -220,6 +222,186 @@ public class TradeDataQueryService {
                         mixedUnit, unitSamples))
                 .suggestions(List.of())
                 .build();
+    }
+
+    // =================================================================
+    // 数据范围（「有哪些国家的数据可以访问」这类问题）
+    //
+    // 此前这类问题命中 CHITCHAT，拿到的是 buildCapabilityAnswer() 里一段
+    // **写死的**能力说明：它把「覆盖 2015-01 ~ 2025-03」硬编码在字符串里，
+    // 又从不提有哪些国家，所以「有什么国家的数据可以访问」得到的回答答非所问。
+    //
+    // 这里改成从库里现算：伙伴清单 + 时间范围 + 记录数 + 商品数。
+    // 代价是 4 条聚合 SQL（实测合计约 6.7s，trade_out 单表 191 万行，
+    // COUNT(DISTINCT 商品编码) 就占 4.2s），因此：
+    //   ① 结果带 TTL 缓存；
+    //   ② 过期时**先返回旧值、后台刷新**，不把 6.7s 甩到某个用户的请求上；
+    //   ③ 应用启动后后台预热一次，首个请求即命中。
+    // =================================================================
+
+    /** 库是离线批量导入的，半小时粒度足够新，也避免反复全表扫。 */
+    private static final long SCOPE_TTL_MS = 30 * 60 * 1000L;
+
+    private volatile ScopeInfo scopeCache;
+    private volatile long scopeCacheAt;
+    private final AtomicBoolean scopeRefreshing = new AtomicBoolean(false);
+
+    @PostConstruct
+    void warmScope() {
+        Thread t = new Thread(() -> {
+            try {
+                loadScope();
+                log.info("数据范围缓存已预热：{}", scopeSummary());
+            } catch (Exception e) {
+                log.warn("数据范围预热失败（不影响启动，首次提问时会重试）: {}", e.getMessage());
+            }
+        }, "scope-cache-warmup");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 一句话说清「能访问什么数据」，供能力说明复用。 */
+    public String scopeSummary() {
+        ScopeInfo s = scope();
+        if (s == null || s.partners.isEmpty()) return "历史数据当前不可用。";
+        return String.join("、", s.partners) + "（共 " + s.partners.size() + " 个贸易伙伴），"
+                + "时间范围 " + s.range + "，"
+                + "进口 " + num(s.inRows) + " 条 / " + s.inProducts + " 个商品，"
+                + "出口 " + num(s.outRows) + " 条 / " + s.outProducts + " 个商品。";
+    }
+
+    /** 「有哪些国家的数据可以访问」的完整回答（Markdown）。 */
+    public String scopeAnswer() {
+        ScopeInfo s = scope();
+        if (s == null || s.partners.isEmpty()) {
+            return "暂时读不到数据范围信息，请稍后重试。";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("目前系统可访问 **").append(s.partners.size())
+                .append(" 个贸易伙伴** 的进出口数据：\n\n");
+        sb.append("| 贸易伙伴 | 进口记录 | 出口记录 |\n|---|---|---|\n");
+        for (String p : s.partners) {
+            sb.append("| ").append(p)
+                    .append(" | ").append(num(s.inByPartner.getOrDefault(p, 0L)))
+                    .append(" | ").append(num(s.outByPartner.getOrDefault(p, 0L)))
+                    .append(" |\n");
+        }
+        sb.append("\n")
+                .append("- 时间范围：**").append(s.range).append("**\n")
+                .append("- 商品数：进口 **").append(s.inProducts)
+                .append("** 个，出口 **").append(s.outProducts).append("** 个\n")
+                .append("- 覆盖方向：进口、出口\n\n")
+                .append("可以直接问历史数据，例如「2025年1月哈萨克斯坦的出口数量」；")
+                .append("要做预测则需把贸易伙伴、商品名称、贸易方式、境内注册地四项说齐，")
+                .append("缺哪项我会告诉你库里实际有哪些可选值。");
+        return sb.toString();
+    }
+
+    /** 取缓存；过期时先返回旧值，同时触发一次后台刷新。 */
+    private ScopeInfo scope() {
+        ScopeInfo c = scopeCache;
+        if (c == null) {
+            try {
+                return loadScope();
+            } catch (Exception e) {
+                log.warn("读取数据范围失败: {}", e.getMessage());
+                return null;
+            }
+        }
+        long age = System.currentTimeMillis() - scopeCacheAt;
+        if (age > SCOPE_TTL_MS && scopeRefreshing.compareAndSet(false, true)) {
+            Thread t = new Thread(() -> {
+                try {
+                    loadScope();
+                } catch (Exception e) {
+                    log.warn("数据范围后台刷新失败，继续用旧值: {}", e.getMessage());
+                } finally {
+                    scopeRefreshing.set(false);
+                }
+            }, "scope-cache-refresh");
+            t.setDaemon(true);
+            t.start();
+        }
+        return c;
+    }
+
+    private synchronized ScopeInfo loadScope() {
+        ScopeInfo s = new ScopeInfo(dataRange(table("in")));
+
+        Map<String, Long> in = partnerCounts(table("in"));
+        Map<String, Long> out = partnerCounts(table("out"));
+        s.inByPartner.putAll(in);
+        s.outByPartner.putAll(out);
+
+        List<String> names = new ArrayList<>(in.keySet());
+        for (String k : out.keySet()) {
+            if (!names.contains(k)) names.add(k);
+        }
+        names.sort(Comparator.comparingLong((String k) ->
+                in.getOrDefault(k, 0L) + out.getOrDefault(k, 0L)).reversed());
+        s.partners.addAll(names);
+
+        s.inRows = sum(in.values());
+        s.outRows = sum(out.values());
+        s.inProducts = productCount(table("in"));
+        s.outProducts = productCount(table("out"));
+
+        scopeCache = s;
+        scopeCacheAt = System.currentTimeMillis();
+        return s;
+    }
+
+    private Map<String, Long> partnerCounts(String table) {
+        // 刻意用 queryForList 而不是 jdbc.query(sql, 回调)：
+        // query(String, RowCallbackHandler) 与 query(String, ResultSetExtractor) 两个重载
+        // 对同一个 lambda 都适用，编译器会报 ambiguous。queryForList 没有这个歧义。
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT 贸易伙伴名称 AS n, COUNT(*) AS c FROM " + table
+                        + " GROUP BY 贸易伙伴名称 ORDER BY c DESC");
+
+        Map<String, Long> m = new LinkedHashMap<>();
+        for (Map<String, Object> r : rows) {
+            Object raw = r.get("n");
+            String name = raw == null ? "" : String.valueOf(raw).trim();
+            Object c = r.get("c");
+            m.put(name.isEmpty() ? "（未标注）" : name,
+                    c instanceof Number ? ((Number) c).longValue() : 0L);
+        }
+        return m;
+    }
+
+    private int productCount(String table) {
+        Integer n = jdbc.queryForObject(
+                "SELECT COUNT(DISTINCT 商品编码) FROM " + table, Integer.class);
+        return n == null ? 0 : n;
+    }
+
+    private static long sum(Collection<Long> vals) {
+        long s = 0;
+        for (Long v : vals) {
+            if (v != null) s += v;
+        }
+        return s;
+    }
+
+    private static String num(long n) {
+        return String.format("%,d", n);
+    }
+
+    /** 数据范围快照。 */
+    private static final class ScopeInfo {
+        final String range;
+        final List<String> partners = new ArrayList<>();
+        final Map<String, Long> inByPartner = new LinkedHashMap<>();
+        final Map<String, Long> outByPartner = new LinkedHashMap<>();
+        long inRows;
+        long outRows;
+        int inProducts;
+        int outProducts;
+
+        ScopeInfo(String range) {
+            this.range = range;
+        }
     }
 
     /** 某个维度在库中的可选值（用于缺失槽位的「可照做」引导）。 */
