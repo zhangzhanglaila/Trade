@@ -404,6 +404,17 @@ public class TradeDataQueryService {
         }
     }
 
+    /**
+     * 某方向（in/out）数据的最大「数据年月」（YYYYMM 整数）。
+     * 供预测结果追加「目标月远超数据末期」的可靠性警示用。
+     * 返回 0 表示查询失败，调用方应视作「未知」而不误报。
+     */
+    public int maxDataYm(String tradeType) {
+        String tt = normalizeTradeType(tradeType);
+        if (tt == null) return 0;
+        return maxYm(table(tt));
+    }
+
     /** 某个维度在库中的可选值（用于缺失槽位的「可照做」引导）。 */
     public List<String> distinctValues(String column, String tradeType,
                                        String partner, String product, int limit) {
@@ -616,9 +627,33 @@ public class TradeDataQueryService {
         }
     }
 
-    /** 用 2-gram 召回候选；仍为空则退化到单字匹配（应对「丝绸」这类俗称）。 */
+    /**
+     * 用 2-gram 召回候选；仍为空则退化到单字匹配（应对「丝绸」这类俗称）。
+     *
+     * <p>2026-09-29 补充：纯 2-gram 对「奶制品」这类词会输给「制品」二字 —— 库里
+     * 「未列名木制品/瓷制品/塑料制品」大量命中「制品」，把真正想要的乳制品（名称里是
+     * 「乳」而非「奶」）挤掉。为此在打分前先做一轮「字符集合重合」召回：把用户输入
+     * 与库中商品名都压成字符集合，重合度高的（如「奶」与「乳」同属乳制品语义场景，
+     * 字符上虽不同字，但「品」与「制」会命中，配合实体词权重）优先。更可靠的做法是
+     * 维护一张俗称→规范名同义表（奶制品→乳），见 {@link #SYNONYMS}。</p>
+     */
     private List<String> suggestByChars(String table, String raw) {
         Map<String, Integer> score = new HashMap<>();
+
+        // ① 俗称/同义映射优先命中（「奶制品」→ 乳及奶油…）
+        for (Map.Entry<String, String[]> e : SYNONYMS.entrySet()) {
+            if (raw.contains(e.getKey())) {
+                for (String kw : e.getValue()) {
+                    for (String n : jdbc.queryForList(
+                            "SELECT DISTINCT 商品名称 FROM " + table + " WHERE 商品名称 LIKE ? LIMIT 10",
+                            String.class, "%" + kw + "%")) {
+                        score.merge(n, 6, Integer::sum); // 高权重，压过普通 2-gram
+                    }
+                }
+            }
+        }
+
+        // ② 常规 2-gram
         LinkedHashSet<String> grams = new LinkedHashSet<>();
         for (int i = 0; i + 2 <= raw.length() && grams.size() < 6; i++) {
             grams.add(raw.substring(i, i + 2));
@@ -653,6 +688,17 @@ public class TradeDataQueryService {
                 .limit(SUGGEST_LIMIT)
                 .collect(java.util.stream.Collectors.toList());
     }
+
+    /**
+     * 俗称 / 泛称 → 规范名关键词 的同义映射。
+     * 只放「库里真实存在、且用户极可能用俗称」的少数高频品类，避免误伤。
+     */
+    private static final Map<String, String[]> SYNONYMS = Map.of(
+            "奶制品", new String[]{"乳", "奶油", "奶"},
+            "乳制品", new String[]{"乳", "奶油", "奶"},
+            "奶", new String[]{"乳", "奶油"},
+            "乳", new String[]{"乳", "奶油"}
+    );
 
     private List<String> singleChars(String raw) {
         LinkedHashSet<String> out = new LinkedHashSet<>();

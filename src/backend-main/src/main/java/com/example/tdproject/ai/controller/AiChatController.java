@@ -184,6 +184,24 @@ public class AiChatController {
         if (predict.getRaw() != null && predict.getRaw().get("warning") != null) {
             sb.append("\n注意：").append(predict.getRaw().get("warning"));
         }
+
+        // 远期月份可靠性警示：模型的输入序列是「目标月之前」的历史，目标月本身
+        // 不进入模型（fetch_history 只用它过滤历史）。数据末期是 2025-03，问
+        // 2027-01 与问 2025-04 喂给模型的是同一段历史、得到同一个数 —— 若不加这句，
+        // 用户会误以为那是模型对 2027 年的真实判断。凡是目标月越过数据末期 + 1 个月
+        // 的，都如实标注。
+        if (slots != null && slots.getYear() != null && slots.getMonth() != null) {
+            int targetYm = slots.getYear() * 100 + slots.getMonth();
+            int maxYm = tradeDataQueryService.maxDataYm(slots.getTradeType());
+            if (maxYm > 0 && targetYm > maxYm + 1) {
+                sb.append("\n\n⚠️ 可靠性提醒：你问的是 ").append(slots.getYear()).append("-")
+                        .append(String.format("%02d", slots.getMonth()))
+                        .append("，但该方向数据只更新到 ")
+                        .append(maxYm / 100).append("-")
+                        .append(String.format("%02d", maxYm % 100))
+                        .append("。当前数值是基于最近历史外推的结果，月份越远越不可靠，请谨慎参考。");
+            }
+        }
         return sb.toString();
     }
 

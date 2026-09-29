@@ -37,6 +37,9 @@ CASES = [
     ("预测2026年1月哈萨克斯坦其他未列名冻鱼的进口单价", "PREDICT"),
     ("预测哈萨克斯坦其他未列名冻鱼、一般贸易、新疆维吾尔自治区2026年1月进口单价",
      "PREDICT"),
+    ("预测哈萨克斯坦27年1月的进口奶制品的数量", "PREDICT"),
+    ("预测哈萨克斯坦石油原油及从沥青矿物提取的原油、一般贸易、北京市2027年1月进口数量",
+     "PREDICT"),
 ]
 
 # 库里实际的贸易伙伴。用于校验「数据范围」回答不是模板，而是真的从库里算的。
@@ -133,6 +136,38 @@ def check_chitchat_scope(data):
     return 0
 
 
+def check_dairy_suggest(data):
+    """「奶制品」的候选建议必须是乳及奶油类，而非「木/瓷/塑料制品」。
+
+    纯 2-gram 会让「制品」二字命中大量「未列名 X 制品」，把真正的乳制品挤掉。
+    修复后同义映射（奶制品→乳/奶油）优先召回，候选里应出现「乳」字。
+    """
+    ans = data.get("answer") or ""
+    problems = []
+    if "乳" not in ans and "奶油" not in ans:
+        problems.append("候选里没有任何乳/奶油制品")
+    bad = [w for w in ("木制品", "瓷制品", "塑料制品") if w in ans]
+    if bad:
+        problems.append("候选仍被「制品」二字劫持：%s" % "、".join(bad))
+    if problems:
+        print("      ! " + "；".join(problems))
+        return 1
+    return 0
+
+
+def check_far_month_warning(data):
+    """目标月远超数据末期时，预测结果必须带可靠性警示。
+
+    模型输入是「目标月之前」的历史，目标月本身不进模型，2027-01 与 2025-04
+    喂的是同一段历史、同一个数。不加警示用户会误以为那是模型对 2027 的真实判断。
+    """
+    ans = data.get("answer") or ""
+    if "可靠性提醒" not in ans:
+        print("      ! 远期月份预测缺少「可靠性提醒」")
+        return 1
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8080")
@@ -180,6 +215,10 @@ def main():
             failed += check_scope(data)
         if route == "CHITCHAT":
             failed += check_chitchat_scope(data)
+        if "奶制品" in text:
+            failed += check_dairy_suggest(data)
+        if "2027年1月进口数量" in text and "石油" in text:
+            failed += check_far_month_warning(data)
 
     print("\n%s  （%d 项，失败 %d 项）"
           % ("全部通过" if failed == 0 else "存在失败", len(CASES), failed))
