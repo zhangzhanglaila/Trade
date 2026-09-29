@@ -17,6 +17,12 @@ public class CorsConfig {
         // 注意：当 allowCredentials=true 时，不能使用 addAllowedOrigin("*")，需要用 allowedOriginPatterns
         config.addAllowedOriginPattern("http://localhost:*");
         config.addAllowedOriginPattern("http://127.0.0.1:*");
+        // 公网入口：阿里云反向隧道暴露的服务（IP 形式）
+        config.addAllowedOriginPattern("http://123.56.246.31:*");
+        // 兜底：放行任意 origin（含未来绑定域名/更换 IP）。
+        // 因 allowCredentials=true 无法用字面量 "*"，这里用 pattern "*" 等价全放行；
+        // 若后续要收紧安全策略，可替换为具体域名白名单。
+        config.addAllowedOriginPattern("*");
 
         // 允许携带 Cookie（前后端需要同时开启，前端请求时也要设置 withCredentials: true）
         config.setAllowCredentials(true);
