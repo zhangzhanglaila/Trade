@@ -78,6 +78,11 @@ ai:
     base-url: http://127.0.0.1:8081/api
   flask:
     base-url: http://127.0.0.1:5000
+  # 历史数据查询（DATA_QUERY 路由）用的库名。
+  # trade_in / trade_out 不在主数据源 foreign_trade_qa_db 里，而在 trade 库；
+  # TradeDataQueryService 复用主 DataSource，SQL 里用 trade.xxx 跨库限定名。
+  data:
+    db: ${TRADE_DATA_DB:trade}
   qwen:
     api-key:
     base-url: ${QWEN_BASE_URL:}
