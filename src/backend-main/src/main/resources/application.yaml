@@ -139,6 +139,11 @@ ai:
   vector:
     provider: ${VECTOR_PROVIDER:local}
     topK: ${VECTOR_TOPK:5}
+    # 一次检索取回的候选条数（会自动抬到不低于 topK）。
+    # topK 管「喂给大模型多少条」，本值管「取回来展示多少条」——
+    # 本地向量库是全量余弦扫描后取 top-k，k 从 5 提到 20 的耗时差在毫秒以内，
+    # 所以调大本值可以在不改耗时的前提下，让用户看到真实的检索候选规模。
+    candidate-topk: ${VECTOR_CANDIDATE_TOPK:20}
 
 integration:
   aj-report:

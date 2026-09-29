@@ -127,6 +127,8 @@ public class AiChatController {
                     .route(IntentRouter.ROUTE_RAG_NEWS)
                     .answer(rag.getAnswer())
                     .sources(rag.getSources())
+                    .corpusSize(rag.getCorpusSize())
+                    .contextDocs(rag.getContextDocs())
                     .predictResult(null)
                     .debugInfo(debug)
                     .build());

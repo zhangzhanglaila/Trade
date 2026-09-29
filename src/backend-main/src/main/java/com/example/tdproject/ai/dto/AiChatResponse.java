@@ -18,6 +18,12 @@ public class AiChatResponse {
     /** RAG 召回来源 */
     private List<RagHit> sources;
 
+    /** 本轮参与检索的新闻语料总条数（RAG_NEWS 时填充） */
+    private Integer corpusSize;
+
+    /** 实际进入大模型上下文的来源条数（RAG_NEWS 时填充，= sources 中 usedInContext 为 true 的条数） */
+    private Integer contextDocs;
+
     /** 预测结果（原样透传 Flask + 规范化字段） */
     private PredictResponse predictResult;
 

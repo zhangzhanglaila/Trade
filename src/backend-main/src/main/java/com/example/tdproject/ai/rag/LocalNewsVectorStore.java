@@ -165,6 +165,13 @@ public class LocalNewsVectorStore implements NewsVectorStore {
         }
     }
 
+    @Override
+    public int size() {
+        // 纯内存读取。search() 内部会先 ensureLoaded()，所以调用方在检索之后取值一定是新鲜的，
+        // 未载入时返回 -1 让调用方决定是否退回 count()。
+        return (loaded && !stale) ? rowCount : -1;
+    }
+
     // ==================================================================
     // 检索
     // ==================================================================
@@ -242,7 +249,9 @@ public class LocalNewsVectorStore implements NewsVectorStore {
             row.put("score", (double) bestScore[i]);
             out.add(row);
         }
-        log.debug("本地向量检索：候选 {} 条，命中 {} 条，耗时 {} ms", n, out.size(), ms);
+        // 提到 info：这一行是判断「候选条数调大会不会拖慢检索」的唯一直接证据，
+        // 一次问答只打一行，不构成噪声。
+        log.info("本地向量检索：语料 {} 条，取回候选 {} 条，耗时 {} ms", n, out.size(), ms);
         return out;
     }
 

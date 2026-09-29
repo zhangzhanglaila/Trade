@@ -25,8 +25,22 @@ public class NewsRagService {
 
     /** 单条新闻进入提示词的内容上限。 */
     private static final int SNIPPET_MAX = 800;
-    /** 单次进入提示词的片段数上限，避免超出模型上下文。 */
-    private static final int MAX_CONTEXT_DOCS = 5;
+    /**
+     * 单次进入提示词的片段数上限的兜底值（正常从 ai.vector.topK 读取）。
+     *
+     * <p>「检索候选条数」与「进入提示词的条数」是两件事，这里刻意把它们分开：</p>
+     * <ul>
+     *   <li><b>上下文条数</b>（ai.vector.topK）：真正拼进提示词的片段数，直接决定大模型耗时。</li>
+     *   <li><b>候选条数</b>（ai.vector.candidate-topk）：一次取回并展示的条数，
+     *       决定来源列表有多长，也就是用户能看见「一共捞到多少条」。</li>
+     * </ul>
+     * <p>本地向量库是对全部向量做一遍余弦扫描，取 5 条和取 20 条的计算量几乎相同，
+     * 所以放大候选条数可以在不改耗时的前提下把「检索规模」如实呈现给用户。</p>
+     */
+    private static final int DEFAULT_CONTEXT_DOCS = 5;
+
+    /** 候选条数的兜底值。 */
+    private static final int DEFAULT_CANDIDATE_TOPK = 20;
 
     /**
      * 国家关键词表：news_articles 表里并没有 country 列，
@@ -56,7 +70,8 @@ public class NewsRagService {
         if (question == null || question.isBlank()) {
             throw new IllegalArgumentException("问题不能为空");
         }
-        int topK = topK();
+        int ctxDocs = contextDocs();
+        int candidateK = candidateTopK(ctxDocs);
 
         // 1) 问题向量化
         List<Double> vec = llmClient.embed(question);
@@ -66,20 +81,22 @@ public class NewsRagService {
         float[] q = toFloatArray(vec);
 
         // 2) 向量检索；带过滤条件时若无结果，自动放宽一次（语料的国家/年份是尽力派生的，可能命中不到）
-        List<Map<String, Object>> hits = vectorStore.search(q, country, year, topK);
+        List<Map<String, Object>> hits = vectorStore.search(q, country, year, candidateK);
         if (hits.isEmpty() && (country != null || year != null)) {
             log.info("带过滤条件(country={}, year={})检索为空，放宽条件重试", country, year);
-            hits = vectorStore.search(q, null, null, topK);
+            hits = vectorStore.search(q, null, null, candidateK);
         }
         if (hits.isEmpty()) {
             // 兜底：索引可能还没建
-            long n = vectorStore.count();
+            int n = corpusSize();
             String tip = n == 0
                     ? "当前向量索引为空。请先执行 POST /ai/rag/index/full 构建索引。"
                     : "换一个更具体的问法（例如带上国家、商品或时间）。";
             return RagAnswer.builder()
-                    .answer("在当前新闻语料中未检索到与问题高度相关的内容。" + tip)
+                    .answer("已对当前全部新闻语料逐条比对，未找到与问题相关的内容。" + tip)
                     .sources(List.of())
+                    .corpusSize(n)
+                    .contextDocs(0)
                     .build();
         }
 
@@ -97,8 +114,9 @@ public class NewsRagService {
             byId.put(c.getId(), c);
         }
 
-        List<RagHit> sources = new ArrayList<>();
+        List<RagHit> sources = new ArrayList<>(hits.size());
         StringBuilder context = new StringBuilder();
+        int usedInContext = 0;
         for (Map<String, Object> h : hits) {
             Object rawId = h.get("newsId");
             if (!(rawId instanceof Number)) continue;
@@ -109,15 +127,21 @@ public class NewsRagService {
             TNewsCorpus c = byId.get(id);
             if (c == null) continue;
 
+            // 只有得分最高的前 ctxDocs 条会进提示词；其余仅作「还捞到了这些」展示，
+            // 这样既不影响大模型耗时，也不会让用户以为检索只返回了寥寥几条。
+            boolean used = usedInContext < ctxDocs;
+            if (used) usedInContext++;
+
             sources.add(RagHit.builder()
                     .newsId(id)
                     .title(c.getNewsTitle())
                     .source(c.getNewsSource())
                     .publishTime(c.getPublishTime())
                     .score(score)
+                    .usedInContext(used)
                     .build());
 
-            if (sources.size() > MAX_CONTEXT_DOCS) continue;
+            if (!used) continue;
 
             String content = c.getNewsContent() == null ? "" : c.getNewsContent();
             if (content.length() > SNIPPET_MAX) {
@@ -133,6 +157,8 @@ public class NewsRagService {
             return RagAnswer.builder()
                     .answer("检索到了向量结果，但在新闻表中未找到对应记录（索引与语料可能不同步，建议重建索引）。")
                     .sources(List.of())
+                    .corpusSize(corpusSize())
+                    .contextDocs(0)
                     .build();
         }
 
@@ -163,6 +189,8 @@ public class NewsRagService {
         return RagAnswer.builder()
                 .answer(answer)
                 .sources(sources)
+                .corpusSize(corpusSize())
+                .contextDocs(usedInContext)
                 .build();
     }
 
@@ -447,12 +475,35 @@ public class NewsRagService {
         return out;
     }
 
-    private int topK() {
+    /** 进入提示词的片段数。 */
+    private int contextDocs() {
         Integer k = props.getVector().getTopK();
         if (k == null || k <= 0) {
             k = props.getMilvus().getTopK();
         }
-        return (k == null || k <= 0) ? 5 : k;
+        return (k == null || k <= 0) ? DEFAULT_CONTEXT_DOCS : k;
+    }
+
+    /**
+     * 一次检索取回的候选条数，至少覆盖 ctxDocs。
+     *
+     * <p>之所以敢放大：本地向量库是对全部向量做一遍余弦扫描后再维护 top-k，
+     * 维护成本相对扫描本身可忽略，取 5 条与取 20 条的耗时差在毫秒以内；
+     * 真正的成本在提示词长度上，而提示词只吃 ctxDocs 条，与本值无关。</p>
+     */
+    private int candidateTopK(int ctxDocs) {
+        Integer k = props.getVector().getCandidateTopK();
+        int v = (k == null || k <= 0) ? DEFAULT_CANDIDATE_TOPK : k;
+        return Math.max(v, ctxDocs);
+    }
+
+    /** 语料总条数。优先读向量库的内存计数，避免每次问答都打一次 COUNT(*)。 */
+    private int corpusSize() {
+        int n = vectorStore.size();
+        if (n >= 0) return n;
+        long c = vectorStore.count();
+        if (c <= 0) return (int) c;
+        return c > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) c;
     }
 
     private int batchSize() {

@@ -98,14 +98,26 @@
 
             <!-- RAG 来源 -->
             <div v-else-if="m.data.route === 'RAG_NEWS'">
-              <div class="section-title">来源（sources）</div>
+              <div class="section-title">来源（按相关度从高到低）</div>
+              <div v-if="sourceNote(m)" class="section-note">{{ sourceNote(m) }}</div>
               <a-table
                 :columns="sourceColumns"
-                :data-source="m.data.sources || []"
+                :data-source="visibleSources(m)"
                 :pagination="false"
                 size="small"
                 row-key="newsId"
               />
+              <a-button
+                v-if="hiddenSourceCount(m) > 0"
+                type="link"
+                size="small"
+                class="more-btn"
+                @click="toggleSources(m)"
+              >
+                {{ expandedSources[m.id]
+                  ? '收起'
+                  : `展开其余 ${hiddenSourceCount(m)} 条（本次共取回 ${sourceList(m).length} 条候选）` }}
+              </a-button>
             </div>
 
             <!--
@@ -182,20 +194,25 @@ const sending = ref(false)
 const chatBodyRef = ref(null)
 
 const sourceColumns = [
-  { title: 'newsId', dataIndex: 'newsId', width: 90 },
-  { title: 'title', dataIndex: 'title', ellipsis: true },
-  { title: 'source', dataIndex: 'source', width: 120, ellipsis: true },
+  { title: 'ID', dataIndex: 'newsId', width: 80 },
   {
-    title: 'publishTime',
-    dataIndex: 'publishTime',
-    width: 170,
-    customRender: ({ text }) => (text ? dayjs(text).format('YYYY-MM-DD HH:mm') : '-')
-  },
-  {
-    title: 'score',
+    title: '相关度',
     dataIndex: 'score',
     width: 90,
     customRender: ({ text }) => (text == null ? '-' : Number(text).toFixed(4))
+  },
+  { title: '标题', dataIndex: 'title', ellipsis: true },
+  {
+    title: '发布时间',
+    dataIndex: 'publishTime',
+    width: 160,
+    customRender: ({ text }) => (text ? dayjs(text).format('YYYY-MM-DD HH:mm') : '-')
+  },
+  {
+    title: '是否进模型',
+    dataIndex: 'usedInContext',
+    width: 110,
+    customRender: ({ text }) => (text ? '已引用' : '仅相关')
   }
 ]
 
@@ -243,6 +260,59 @@ function prettyJson(obj) {
   } catch {
     return String(obj)
   }
+}
+
+// ---------------------------------------------------------------------------
+// RAG 来源展示
+//
+// 后端一次会取回比「进入模型上下文」更多的候选（ai.vector.candidate-topk），
+// 用来如实呈现检索规模。默认只列出真正参与作答的那几条，其余按需展开 ——
+// 否则用户看到 5 行就容易以为「这次一共只检索到 5 条」。
+// ---------------------------------------------------------------------------
+const DEFAULT_SOURCE_ROWS = 5
+const expandedSources = reactive({})
+
+function sourceList(m) {
+  return m.data?.sources || []
+}
+
+/** 默认展示条数对齐后端真正喂给模型的条数，展开后显示全部候选。 */
+function sourceRows(m) {
+  return m.data?.contextDocs || DEFAULT_SOURCE_ROWS
+}
+
+function visibleSources(m) {
+  const all = sourceList(m)
+  return expandedSources[m.id] ? all : all.slice(0, sourceRows(m))
+}
+
+/**
+ * 折叠状态下被隐藏的条数。
+ * 刻意不依赖 expandedSources —— 否则展开后该值变 0，「收起」按钮会当场消失。
+ */
+function hiddenSourceCount(m) {
+  return Math.max(sourceList(m).length - sourceRows(m), 0)
+}
+
+function toggleSources(m) {
+  expandedSources[m.id] = !expandedSources[m.id]
+}
+
+function sourceNote(m) {
+  const all = sourceList(m)
+  if (!all.length) return ''
+  const used = all.filter((s) => s.usedInContext).length || m.data?.contextDocs || 0
+  const total = Number(m.data?.corpusSize)
+  let s = ''
+  if (total > 0) {
+    s += `本次在全部 ${fmtNum(total)} 条新闻语料中逐一比对相关度，`
+  }
+  s += `按相关度取回 ${all.length} 条候选。其中最高的 ${used} 条已作为新闻片段交给模型作答`
+  const rest = all.length - used
+  if (rest > 0) {
+    s += `，其余 ${rest} 条只是同样相关、并未进入本次回答`
+  }
+  return s + '。'
 }
 
 function scrollToBottom() {
@@ -427,6 +497,18 @@ function clearAdvanced() {
 .section-title {
   font-weight: 500;
   margin-bottom: 8px;
+}
+
+.section-note {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #8c8c8c;
+  margin-bottom: 8px;
+}
+
+.more-btn {
+  padding-left: 0;
+  margin-top: 4px;
 }
 
 .raw-pre {

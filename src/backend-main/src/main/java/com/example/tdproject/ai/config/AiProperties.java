@@ -111,6 +111,15 @@ public class AiProperties {
     @Data
     public static class Vector {
         private String provider = "local";
+        /** 进入大模型提示词的片段数上限，直接决定问答耗时。 */
         private Integer topK = 5;
+        /**
+         * 一次检索取回的候选条数（会自动抬到不低于 {@link #topK}）。
+         *
+         * <p>它与 topK 的分工：topK 管「喂给模型多少条」，本值管「取回来展示多少条」。
+         * 本地向量库是全量余弦扫描后取 top-k，k 从 5 提到 20 的耗时差在毫秒以内，
+         * 因此调大本值可以在不增加耗时的前提下，让用户看到真实的检索规模。</p>
+         */
+        private Integer candidateTopK = 20;
     }
 }
