@@ -102,22 +102,27 @@
               <div v-if="sourceNote(m)" class="section-note">{{ sourceNote(m) }}</div>
               <a-table
                 :columns="sourceColumns"
-                :data-source="visibleSources(m)"
+                :data-source="primarySources(m)"
                 :pagination="false"
                 size="small"
                 row-key="newsId"
               />
-              <a-button
-                v-if="hiddenSourceCount(m) > 0"
-                type="link"
-                size="small"
-                class="more-btn"
-                @click="toggleSources(m)"
-              >
-                {{ expandedSources[m.id]
-                  ? '收起'
-                  : `展开其余 ${hiddenSourceCount(m)} 条（本次共取回 ${sourceList(m).length} 条候选）` }}
-              </a-button>
+              <!--
+                其余候选默认收在这个下拉面板里。
+                一次问答最多能取回 20 条候选（ai.vector.candidate-topk），
+                全铺出来会把对话区撑得很长，所以固定只展开前 5 条。
+              -->
+              <a-collapse v-if="restSources(m).length" ghost class="more-collapse">
+                <a-collapse-panel key="rest" :header="restHeader(m)">
+                  <a-table
+                    :columns="sourceColumns"
+                    :data-source="restSources(m)"
+                    :pagination="false"
+                    size="small"
+                    row-key="newsId"
+                  />
+                </a-collapse-panel>
+              </a-collapse>
             </div>
 
             <!--
@@ -265,37 +270,36 @@ function prettyJson(obj) {
 // ---------------------------------------------------------------------------
 // RAG 来源展示
 //
-// 后端一次会取回比「进入模型上下文」更多的候选（ai.vector.candidate-topk），
-// 用来如实呈现检索规模。默认只列出真正参与作答的那几条，其余按需展开 ——
-// 否则用户看到 5 行就容易以为「这次一共只检索到 5 条」。
+// 后端一次会取回比「进入模型上下文」更多的候选（ai.vector.candidate-topk，默认 20），
+// 用来如实呈现检索规模。但候选条数一旦调大，前端如果照单全铺，一次问答就能拉出
+// 二十行表格，把对话区撑爆。
+//
+// 所以这里定死：**默认只列前 5 条**，其余收进下拉面板按需展开。
+// 默认条数刻意不跟随后端配置变化，避免后端一调参、页面长度就跟着变。
 // ---------------------------------------------------------------------------
 const DEFAULT_SOURCE_ROWS = 5
-const expandedSources = reactive({})
 
 function sourceList(m) {
   return m.data?.sources || []
 }
 
-/** 默认展示条数对齐后端真正喂给模型的条数，展开后显示全部候选。 */
-function sourceRows(m) {
-  return m.data?.contextDocs || DEFAULT_SOURCE_ROWS
+/** 默认表里的条数：固定 5，且不超过实际候选数。 */
+function primaryCount(m) {
+  return Math.min(DEFAULT_SOURCE_ROWS, sourceList(m).length)
 }
 
-function visibleSources(m) {
-  const all = sourceList(m)
-  return expandedSources[m.id] ? all : all.slice(0, sourceRows(m))
+/** 默认表（前 5 条）。 */
+function primarySources(m) {
+  return sourceList(m).slice(0, primaryCount(m))
 }
 
-/**
- * 折叠状态下被隐藏的条数。
- * 刻意不依赖 expandedSources —— 否则展开后该值变 0，「收起」按钮会当场消失。
- */
-function hiddenSourceCount(m) {
-  return Math.max(sourceList(m).length - sourceRows(m), 0)
+/** 下拉面板里的其余候选。 */
+function restSources(m) {
+  return sourceList(m).slice(primaryCount(m))
 }
 
-function toggleSources(m) {
-  expandedSources[m.id] = !expandedSources[m.id]
+function restHeader(m) {
+  return `其余 ${restSources(m).length} 条候选（未进入本次回答，点击展开）`
 }
 
 function sourceNote(m) {
@@ -307,7 +311,8 @@ function sourceNote(m) {
   if (total > 0) {
     s += `本次在全部 ${fmtNum(total)} 条新闻语料中逐一比对相关度，`
   }
-  s += `按相关度取回 ${all.length} 条候选。其中最高的 ${used} 条已作为新闻片段交给模型作答`
+  s += `共取回 ${all.length} 条候选，按相关度排序，下方默认列出前 ${primaryCount(m)} 条`
+  s += `，其中相关度最高的 ${used} 条已作为新闻片段交给模型作答`
   const rest = all.length - used
   if (rest > 0) {
     s += `，其余 ${rest} 条只是同样相关、并未进入本次回答`
@@ -506,9 +511,20 @@ function clearAdvanced() {
   margin-bottom: 8px;
 }
 
-.more-btn {
-  padding-left: 0;
-  margin-top: 4px;
+.more-collapse {
+  margin-top: 8px;
+  background: transparent;
+}
+
+/* 折叠面板只作为「其余候选」的下拉入口，标题压缩成一行提示，不要太抢眼 */
+.more-collapse :deep(.ant-collapse-header) {
+  padding: 4px 0 !important;
+  font-size: 12px;
+  color: #1890ff;
+}
+
+.more-collapse :deep(.ant-collapse-content-box) {
+  padding: 8px 0 0 !important;
 }
 
 .raw-pre {
