@@ -2,7 +2,7 @@ package com.example.tdproject.ai.intent;
 
 import com.example.tdproject.ai.dto.AiChatRequest;
 import com.example.tdproject.ai.dto.PredictRequest;
-import com.example.tdproject.ai.http.DashScopeClient;
+import com.example.tdproject.ai.http.LlmClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,7 +20,7 @@ public class IntentRouter {
     public static final String ROUTE_PREDICT = "PREDICT";
     public static final String ROUTE_RAG_NEWS = "RAG_NEWS";
 
-    private final DashScopeClient dashScopeClient;
+    private final LlmClient llmClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public IntentResult route(AiChatRequest req) {
@@ -43,7 +43,7 @@ public class IntentRouter {
             return IntentResult.builder()
                     .route(ROUTE_PREDICT)
                     .predictSlots(slots)
-                    .ragFilters(Map.of("country", req.getCountry(), "year", req.getYear()))
+                    .ragFilters(filters(req))
                     .debug(Map.of("stage", "explicit"))
                     .build();
         }
@@ -53,28 +53,30 @@ public class IntentRouter {
         if (ruleRoute != null) {
             return IntentResult.builder()
                     .route(ruleRoute)
-                    .ragFilters(Map.of("country", req.getCountry(), "year", req.getYear()))
+                    .ragFilters(filters(req))
                     .debug(Map.of("stage", "rule"))
                     .build();
         }
 
-        // Stage 2: LLM 兜底（如未配置千问，则退回 RAG）
-        try {
-            IntentResult llm = llmRoute(text, req);
-            if (llm != null && llm.getRoute() != null) {
-                Map<String, Object> debug = new HashMap<>();
-                debug.put("stage", "llm");
-                if (llm.getDebug() != null) debug.putAll(llm.getDebug());
-                llm.setDebug(debug);
-                return llm;
+        // Stage 2: LLM 兜底（未配置对话模型时直接跳过，避免无谓的异常与等待）
+        if (llmClient.isChatConfigured()) {
+            try {
+                IntentResult llm = llmRoute(text, req);
+                if (llm != null && llm.getRoute() != null) {
+                    Map<String, Object> debug = new HashMap<>();
+                    debug.put("stage", "llm");
+                    if (llm.getDebug() != null) debug.putAll(llm.getDebug());
+                    llm.setDebug(debug);
+                    return llm;
+                }
+            } catch (Exception e) {
+                log.warn("LLM 意图识别失败，回退到 RAG: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("LLM 意图识别失败，回退到 RAG: {}", e.getMessage());
         }
 
         return IntentResult.builder()
                 .route(ROUTE_RAG_NEWS)
-                .ragFilters(Map.of("country", req.getCountry(), "year", req.getYear()))
+                .ragFilters(filters(req))
                 .debug(Map.of("stage", "fallback"))
                 .build();
     }
@@ -131,7 +133,7 @@ public class IntentRouter {
         messages.add(Map.of("role", "system", "content", system));
         messages.add(Map.of("role", "user", "content", user));
 
-        String content = dashScopeClient.chat(messages, Map.of("temperature", 0));
+        String content = llmClient.chat(messages, Map.of("temperature", 0));
 
         Map<String, Object> json;
         try {
@@ -159,7 +161,7 @@ public class IntentRouter {
             return IntentResult.builder()
                     .route(ROUTE_PREDICT)
                     .predictSlots(predictSlots)
-                    .ragFilters(Map.of("country", req.getCountry(), "year", req.getYear()))
+                    .ragFilters(filters(req))
                     .debug(Map.of("llmRaw", content))
                     .build();
         }
@@ -174,6 +176,23 @@ public class IntentRouter {
                 .ragFilters(ragFilters)
                 .debug(Map.of("llmRaw", content))
                 .build();
+    }
+
+    /**
+     * 构造 RAG 过滤条件。
+     *
+     * <p><b>务必不要用 {@code Map.of(...)}</b>：它不接受 null 值，
+     * 而前端默认不传 country/year，用 Map.of 会让每一次问答请求都抛 NullPointerException
+     * （表现为接口返回 code=202、message=null，前端直接报「接口调用失败」）。
+     * 这正是问答功能此前整体不可用的根因。</p>
+     */
+    private Map<String, Object> filters(AiChatRequest req) {
+        Map<String, Object> m = new HashMap<>(4);
+        if (req != null) {
+            m.put("country", req.getCountry());
+            m.put("year", req.getYear());
+        }
+        return m;
     }
 
     private String asString(Object o) {

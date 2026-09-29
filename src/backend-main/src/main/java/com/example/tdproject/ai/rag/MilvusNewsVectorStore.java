@@ -16,14 +16,21 @@ import io.milvus.param.index.CreateIndexParam;
 import io.milvus.response.SearchResultsWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
 
+/**
+ * Milvus 版向量库实现。
+ * <p>默认不启用：需要显式设置 <code>ai.vector.provider=milvus</code> 并把
+ * <code>ai.milvus.host/port</code> 指向已部署的 Milvus 服务。</p>
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class MilvusNewsVectorStore {
+@ConditionalOnProperty(prefix = "ai.vector", name = "provider", havingValue = "milvus")
+public class MilvusNewsVectorStore implements NewsVectorStore {
 
     public static final String FIELD_NEWS_ID = "news_id";
     public static final String FIELD_EMBEDDING = "embedding";
@@ -33,6 +40,7 @@ public class MilvusNewsVectorStore {
     private final AiProperties props;
     private final MilvusClientFactory clientFactory;
 
+    @Override
     public void ensureCollection(boolean recreate) {
         AiProperties.Milvus m = props.getMilvus();
         String collection = m.getCollection();
@@ -118,15 +126,42 @@ public class MilvusNewsVectorStore {
      * 简易 upsert：先 delete 再 insert。
      * 注意：如果数据量大，建议后续改用 Milvus Upsert（若 SDK/服务端支持）。
      */
-    public void upsert(Long newsId, List<Float> embedding, String country, Integer year) {
-        if (newsId == null) {
-            throw new IllegalArgumentException("newsId 不能为空");
-        }
+    @Override
+    public void upsert(long newsId, float[] embedding, String country, Integer year) {
         deleteByNewsId(newsId);
-        insert(newsId, embedding, country, year);
+        insert(newsId, toFloatList(embedding), country, year);
     }
 
-    public void insert(Long newsId, List<Float> embedding, String country, Integer year) {
+    @Override
+    public void upsertBatch(List<VectorRecord> records) {
+        if (records == null) return;
+        for (VectorRecord r : records) {
+            if (r == null) continue;
+            upsert(r.getNewsId(), r.getVec(), r.getCountry(), r.getYear());
+        }
+    }
+
+    @Override
+    public long count() {
+        // Milvus 侧需要额外查询才能统计，这里不阻塞主流程
+        return -1L;
+    }
+
+    @Override
+    public void clear() {
+        ensureCollection(true);
+    }
+
+    private List<Float> toFloatList(float[] arr) {
+        if (arr == null) return List.of();
+        List<Float> list = new ArrayList<>(arr.length);
+        for (float v : arr) {
+            list.add(v);
+        }
+        return list;
+    }
+
+    private void insert(long newsId, List<Float> embedding, String country, Integer year) {
         AiProperties.Milvus m = props.getMilvus();
         String collection = m.getCollection();
 
@@ -157,7 +192,8 @@ public class MilvusNewsVectorStore {
         }
     }
 
-    public void deleteByNewsId(Long newsId) {
+    @Override
+    public void deleteByNewsId(long newsId) {
         AiProperties.Milvus m = props.getMilvus();
         String collection = m.getCollection();
 
@@ -177,9 +213,11 @@ public class MilvusNewsVectorStore {
     /**
      * @return 每条结果：{newsId: long, score: double}
      */
-    public List<Map<String, Object>> search(List<Float> queryEmbedding, String country, Integer year) {
+    @Override
+    public List<Map<String, Object>> search(float[] queryVec, String country, Integer year, int topK) {
         AiProperties.Milvus m = props.getMilvus();
         String collection = m.getCollection();
+        List<Float> queryEmbedding = toFloatList(queryVec);
 
         if (queryEmbedding == null || queryEmbedding.size() != m.getDimension()) {
             throw new IllegalArgumentException("queryEmbedding 维度不匹配：expected=" + m.getDimension() + ", actual=" + (queryEmbedding == null ? 0 : queryEmbedding.size()));
@@ -192,7 +230,7 @@ public class MilvusNewsVectorStore {
         SearchParam.Builder builder = SearchParam.newBuilder()
                 .withCollectionName(collection)
                 .withMetricType(MetricType.COSINE)
-                .withTopK(m.getTopK() == null ? 5 : m.getTopK())
+                .withTopK(topK <= 0 ? (m.getTopK() == null ? 5 : m.getTopK()) : topK)
                 .withOutFields(List.of(FIELD_NEWS_ID, FIELD_COUNTRY, FIELD_YEAR))
                 .withVectorFieldName(FIELD_EMBEDDING)
                 .withVectors(List.of(queryEmbedding))

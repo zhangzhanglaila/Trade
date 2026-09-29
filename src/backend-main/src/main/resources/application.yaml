@@ -95,6 +95,46 @@ ai:
     dimension: ${MILVUS_DIMENSION:1024}
     topK: ${MILVUS_TOPK:5}
 
+  # ------------------------------------------------------------------
+  # 问答大模型（OpenAI 兼容协议：/chat/completions 与 /embeddings）
+  #   chat 与 embedding 允许是两家不同服务商：
+  #     对话 → DeepSeek（deepseek-chat），密钥复用 DEEPSEEK_API_KEY
+  #     嵌入 → SiliconFlow（BAAI/bge-m3，1024 维，正好匹配向量库维度）
+  #   若日后在 GPU 机器上部署本地 Qwen3.5-9B（vLLM 的 OpenAI 兼容服务），
+  #   只需把 ai.llm.chat.base-url 指向该服务、model 改成其模型名即可，代码无需改动。
+  #   凭据统一放在 config/.env（不入库）。
+  # ------------------------------------------------------------------
+  llm:
+    chat:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: ${DEEPSEEK_CHAT_MODEL:deepseek-chat}
+      endpoint-path: ${DEEPSEEK_CHAT_PATH:/chat/completions}
+    embedding:
+      base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn/v1}
+      api-key: ${SILICONFLOW_API_KEY:}
+      model: ${SILICONFLOW_EMBEDDING_MODEL:BAAI/bge-m3}
+      endpoint-path: ${SILICONFLOW_EMBEDDING_PATH:/embeddings}
+      dimension: ${EMBEDDING_DIM:1024}
+      # 建索引参数：batch-size 为单请求条数，concurrency 为并发请求数。
+      #
+      # 注意：吞吐上限并非由并发决定，而是由服务端账号的 TPM（每分钟 token）配额决定。
+      # 实测 SiliconFlow 免费额度下，并发 4 时大量请求返回
+      #   HTTP 429 "Request was rejected due to rate limiting. Details: TPM limit reached."
+      # 此时再提高并发只会制造更多 429，反而更慢 —— 关键是遇到 429 要按秒级退避
+      # （见 LlmClient.backoffMs），而不是毫秒级重试。
+      batch-size: ${EMBEDDING_BATCH_SIZE:64}
+      concurrency: ${EMBEDDING_CONCURRENCY:4}
+    timeout-seconds: ${LLM_TIMEOUT_SECONDS:120}
+    # 重试次数需足以覆盖一次配额窗口：429 下退避为 5s/10s/20s/40s（含抖动），
+    # 5 次尝试累计等待约 75s；沿用 3 次时窗口往往还没刷新就已耗尽重试。
+    max-retries: ${LLM_MAX_RETRIES:5}
+
+  # 向量库选型：local（默认，向量存 MySQL + 内存精确检索）| milvus（需自行部署 Milvus）
+  vector:
+    provider: ${VECTOR_PROVIDER:local}
+    topK: ${VECTOR_TOPK:5}
+
 integration:
   aj-report:
     base-url: ${AJ_REPORT_BASE_URL:http://127.0.0.1:9095}
