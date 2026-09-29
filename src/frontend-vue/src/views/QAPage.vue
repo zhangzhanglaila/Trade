@@ -68,7 +68,9 @@
 
     <div class="qa-body" ref="chatBodyRef">
       <div v-if="messages.length === 0" class="qa-empty">
-        请输入问题开始对话。新闻类问题将走 RAG；填写预测槽位时将优先走 PREDICT。
+        请输入问题开始对话。查历史数据（「2025年1月哈萨克斯坦的出口数量」）、
+        预测未来（「预测…下个月进口单价」）、新闻问答（「最近有哪些关于哈萨克斯坦的新闻」）
+        都会自动路由，不需要手动选。
       </div>
 
       <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
@@ -79,11 +81,23 @@
             <a-divider style="margin: 8px 0" />
 
             <div class="meta">
-              <a-tag color="blue">{{ m.data.route }}</a-tag>
+              <a-tag :color="routeColor(m.data.route)">{{ routeLabel(m.data.route) }}</a-tag>
+            </div>
+
+            <!-- 历史数据查询（DATA_QUERY）：展示按月明细 -->
+            <div v-if="m.data.route === 'DATA_QUERY' && (m.data.dataQuery?.rows || []).length">
+              <div class="section-title">历史数据（按月倒序）</div>
+              <a-table
+                :columns="dataColumns"
+                :data-source="m.data.dataQuery.rows"
+                :pagination="false"
+                size="small"
+                row-key="ym"
+              />
             </div>
 
             <!-- RAG 来源 -->
-            <div v-if="m.data.route === 'RAG_NEWS'">
+            <div v-else-if="m.data.route === 'RAG_NEWS'">
               <div class="section-title">来源（sources）</div>
               <a-table
                 :columns="sourceColumns"
@@ -94,21 +108,25 @@
               />
             </div>
 
-            <!-- 预测结果 -->
-            <div v-else-if="m.data.route === 'PREDICT'">
+            <!--
+              预测结果：只有真的算出来了才渲染这张表。
+              此前无值时也渲染，页面出现 value=- / unit=- 的空表格，
+              用户会以为「页面坏了」——实际上只是槽位没凑齐。
+            -->
+            <div v-else-if="m.data.route === 'PREDICT' && m.data.predictResult">
               <div class="section-title">预测结果</div>
               <a-descriptions size="small" bordered :column="1">
                 <a-descriptions-item label="value">
-                  {{ m.data.predictResult?.value ?? '-' }}
+                  {{ m.data.predictResult.value ?? '-' }}
                 </a-descriptions-item>
                 <a-descriptions-item label="unit">
-                  {{ m.data.predictResult?.unit ?? '-' }}
+                  {{ m.data.predictResult.unit ?? '-' }}
                 </a-descriptions-item>
               </a-descriptions>
 
               <a-collapse class="mt8">
                 <a-collapse-panel key="raw" header="raw（Flask 原始返回）">
-                  <pre class="raw-pre">{{ prettyJson(m.data.predictResult?.raw) }}</pre>
+                  <pre class="raw-pre">{{ prettyJson(m.data.predictResult.raw) }}</pre>
                 </a-collapse-panel>
               </a-collapse>
             </div>
@@ -180,6 +198,44 @@ const sourceColumns = [
     customRender: ({ text }) => (text == null ? '-' : Number(text).toFixed(4))
   }
 ]
+
+// 历史数据查询结果表：一行一个月
+const dataColumns = [
+  { title: '月份', dataIndex: 'label', width: 100 },
+  { title: '数量', dataIndex: 'quantity', width: 150, customRender: ({ text }) => fmtNum(text) },
+  { title: '金额(人民币)', dataIndex: 'rmb', width: 170, customRender: ({ text }) => fmtNum(text) },
+  { title: '单价', dataIndex: 'price', width: 130, customRender: ({ text }) => fmtNum(text) },
+  { title: '单位', dataIndex: 'unit', width: 90 }
+]
+
+const ROUTE_LABELS = {
+  PREDICT: '贸易预测',
+  DATA_QUERY: '历史数据查询',
+  RAG_NEWS: '新闻问答',
+  CHITCHAT: '助手说明'
+}
+
+const ROUTE_COLORS = {
+  PREDICT: 'blue',
+  DATA_QUERY: 'green',
+  RAG_NEWS: 'purple',
+  CHITCHAT: 'default'
+}
+
+function routeLabel(route) {
+  return ROUTE_LABELS[route] || route || '-'
+}
+
+function routeColor(route) {
+  return ROUTE_COLORS[route] || 'default'
+}
+
+function fmtNum(v) {
+  if (v == null) return '-'
+  const n = Number(v)
+  if (!isFinite(n)) return String(v)
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+}
 
 function prettyJson(obj) {
   try {
