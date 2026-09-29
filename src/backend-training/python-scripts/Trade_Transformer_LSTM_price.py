@@ -37,12 +37,30 @@ parser.add_argument('--split_mode', type=str, default='time',
                     choices=['time', 'commodity'],
                     help='切分协议：time=按时间切（默认，测已知商品的下一期预测）；'
                          'commodity=按商品切（测对新商品的预测）')
+parser.add_argument('--group_key', type=str, default='full',
+                    choices=['full', 'commodity'],
+                    help='序列分组键：full=贸易伙伴x商品x贸易方式x注册地（默认，'
+                         '与 app.py 推理端取数口径严格一致）；'
+                         'commodity=仅商品编码（历史行为，序列内存在并列时间点，'
+                         '仅供与旧结论对照，不要用于生产模型）')
 parser.add_argument('--test_ratio', type=float, default=0.2, help='测试集比例（默认 0.2）')
 parser.add_argument('--epochs', type=int, default=1000, help='最大训练轮数（默认沿用脚本原值）')
 parser.add_argument('--max_rows', type=int, default=0, help='冒烟测试：只用约 N 行（0=全量）')
 parser.add_argument('--seed', type=int, default=42, help='随机种子（切分与抽样用）')
+parser.add_argument('--ar_feature', type=str, default='target_log',
+                    choices=['none', 'target_log'],
+                    help='是否把「目标自身的滞后值」作为输入特征：'
+                         'target_log（默认）=窗口内每一期的 log1p(目标) 作为连续特征；'
+                         'none=仅用 year/month/数量/人民币（历史行为）。'
+                         '目标序列强自相关（实测 lag-1 自相关 0.87~0.93），'
+                         '而原特征集里完全没有目标自身的历史值，模型无法表达'
+                         '「预测≈上一期值」，必然打不过 carry-forward 基线。')
 parser.add_argument('--threads', type=int, default=4,
                     help='PyTorch 的 CPU 线程数（默认 4）')
+parser.add_argument('--batch_size', type=int, default=32,
+                    help='训练批次大小（默认 32）。本任务序列很短（seq_length=2）、'
+                         '张量很小，单步耗时基本由固定开销决定，增大批次可显著提升'
+                         '吞吐；全量出口数据下这是能否跑完的关键旋钮。')
 args = parser.parse_args()
 
 # ⚠️ CPU 训练的线程数：默认 torch.get_num_threads() = 机器核数（本机 10），
@@ -177,7 +195,8 @@ df['month'] = df['数据年月'].astype(str).str[4:].astype(int)
 
 # 特征列调整
 categorical_cols = ['贸易伙伴编码', '商品编码', '贸易方式编码', '注册地编码', '计量单位']
-continuous_cols = ['year', 'month', '数量', '人民币']  # 包含连续变量（已包含年月）
+CONTINUOUS_BASE = ['year', 'month', '数量', '人民币']  # 基础连续变量（含年月）
+continuous_cols = list(CONTINUOUS_BASE)
 # 根据参数确定目标变量
 if args.target == 'price':
     target_cols = ['单价']
@@ -198,6 +217,33 @@ if args.target == 'price':
 else:
     df['log_数量'] = np.log1p(df['数量'])
     target_cols_log = ['log_数量']
+
+# =====================================================================
+# 目标自身的滞后值作为输入特征（--ar_feature target_log）
+#
+# 本任务的目标是「该序列下一期的单价 / 数量」，实测 log 空间 lag-1 自相关
+# 0.87~0.93 —— 接近随机游走，所以「上一期值」是一条极强的朴素基线
+# （进口-单价/time log 空间 R2=+0.6908，且它常常强于本模型）。
+#
+# 而基础特征集 ['year','month','数量','人民币'] 里【完全没有目标自身的历史值】，
+# 模型连「复制上一期」这件事都无法表达，等于被结构性剥夺了最强的那个信号。
+# 把窗口内每一期的 log1p(目标) 也放进连续特征后，模型至少能学到「≈上一期值」，
+# 再在此基础上做增量修正 —— 这是时序预测的标准做法（ab_ar.sh 即为此设计的 A/B）。
+#
+# 注意：
+#   · 该特征只用窗口内（t-seq_length .. t-1）的目标值，不含 t 期，无泄漏。
+#   · 单独存成 _AR_COL 列，避免与 scaler_y 使用的 target_cols_log 互相覆盖
+#     （后者会被 scaler_y 原地标准化成另一个空间）。
+#   · 它随 scaler_X 一起标准化，故 app.py 只需按同一列表追加 raw 的 log1p 值。
+# =====================================================================
+_AR_COL = f'_ar_log_{args.target}'
+if args.ar_feature == 'target_log':
+    df[_AR_COL] = np.log1p(df[target_cols[0]])
+    continuous_cols = CONTINUOUS_BASE + [_AR_COL]
+    print(f"已启用目标滞后特征: {_AR_COL}   continuous_cols={continuous_cols}")
+else:
+    continuous_cols = list(CONTINUOUS_BASE)
+    print("未启用目标滞后特征（--ar_feature none）")
 
 # =====================================================================
 # 数据切分 与 特征缩放
@@ -253,8 +299,37 @@ if len(df) == 0:
 # 预留槽位，若拿编码后的值分组，commodity 协议下所有新商品会被并成一组。
 df['_orig_comm'] = df['商品编码'].astype(str)
 
-# 每个商品内部按时间先后排序，保证序列的时间顺序正确
-df = df.sort_values(['_orig_comm', 'year', 'month']).reset_index(drop=True)
+# =====================================================================
+# 序列分组键（_series_key）—— 训练与推理的口径必须一致
+#
+# app.py 的 db_process() 用四条 WHERE 取历史：
+#     贸易伙伴名称 AND 商品名称 AND 贸易方式名称 AND 注册地名称
+# 也就是说推理端的「一条时间序列」= 四键完全相同的一串月份。
+#
+# 原实现只按「商品编码」单键分组，同一序列里混入不同伙伴/贸易方式/注册地的行。
+# 实测「同一(商品,年月)存在重复行」的占比：进口 72.12%、出口 94.26%，即序列里
+# 绝大多数相邻点属于同一个月 —— 「上一期」不再是一个月前，时间步语义不成立。
+# 更致命的是：推理端按四键取数，输入分布与训练时完全不同（训练/推理口径错配），
+# 模型在真实问答里必然给不出可用的数。故默认 group_key=full。
+#
+# 实测四键分组后的序列量与原单键口径相当（进口 31,044 / 出口 1,484,018 条，
+# seq_length=2），改为正确语义不会损失训练规模。
+# =====================================================================
+SERIES_KEYS = ['贸易伙伴编码', '商品编码', '贸易方式编码', '注册地编码']
+if args.group_key == 'full':
+    _sk = df[SERIES_KEYS[0]].astype(str)
+    for _c in SERIES_KEYS[1:]:
+        _sk = _sk.str.cat(df[_c].astype(str), sep='|')
+    df['_series_key'] = _sk
+    del _sk
+else:
+    # 历史行为：仅商品编码。保留以便与旧结论对照。
+    df['_series_key'] = df['_orig_comm']
+
+print(f"序列分组键: {args.group_key}   序列条数 {df['_series_key'].nunique():,}")
+
+# 每条序列内部按时间先后排序，保证序列的时间顺序正确
+df = df.sort_values(['_series_key', 'year', 'month']).reset_index(drop=True)
 ym_all = df['数据年月'].astype('int64')
 
 if args.split_mode == 'time':
@@ -299,13 +374,14 @@ df[continuous_cols] = scaler_X.transform(df[continuous_cols])
 
 # ---- 按商品分组创建时间序列，并记录每条序列的商品 / 目标月份 / 窗口末值 ----
 sequences = []
-seq_comm = []
+seq_comm = []            # 该序列所属的商品编码（供冷启动统计 / commodity 协议）
+seq_skey = []            # 该序列所属的四键序列（供分组口径核对）
 seq_ym = []
 seq_prev_y = []          # 窗口最后一个目标值，供「上一期值」基线使用
 
-for name, group in df.groupby('_orig_comm', sort=False):
+for name, group in df.groupby('_series_key', sort=False):
     group = group.sort_values(['year', 'month'])
-    if len(group) < seq_length + 1:      # 数据点不够，跳过该商品
+    if len(group) < seq_length + 1:      # 数据点不够，跳过该序列
         continue
 
     X_cat_group = group[categorical_cols].values
@@ -314,12 +390,15 @@ for name, group in df.groupby('_orig_comm', sort=False):
     # 广播成 (B,B)，训练损失会假性地恒定在方差附近（实测 ≈1.0）而不学习。
     y_group = group[target_cols_log].values
     ym_group = group['数据年月'].astype('int64').values
+    # 同一条序列内四键完全相同，取首行的商品编码即可代表整条序列
+    comm_of_group = str(group['_orig_comm'].iloc[0])
 
     for i in range(len(X_cat_group) - seq_length):
         sequences.append((X_cat_group[i:i + seq_length],
                           X_cont_group[i:i + seq_length],
                           y_group[i + seq_length]))
-        seq_comm.append(str(name))
+        seq_comm.append(comm_of_group)
+        seq_skey.append(str(name))
         seq_ym.append(int(ym_group[i + seq_length]))
         seq_prev_y.append(float(y_group[i + seq_length - 1][0]))
 
@@ -330,6 +409,7 @@ X_cat = np.array([s[0] for s in sequences], dtype=np.int64)
 X_cont = np.array([s[1] for s in sequences], dtype=np.float64)
 y = np.array([s[2] for s in sequences], dtype=np.float64)
 seq_comm = np.array(seq_comm)
+seq_skey = np.array(seq_skey)
 seq_ym = np.array(seq_ym)
 seq_prev_y = np.array(seq_prev_y)
 
@@ -349,9 +429,15 @@ if len(train_idx) == 0 or len(test_idx) == 0:
 # time 协议下应接近 0；commodity 协议下按设计接近 100%（这正是原实现的问题）。
 train_comms = set(seq_comm[train_idx].tolist())
 cold_mask = np.array([c not in train_comms for c in seq_comm[test_idx]])
+# 序列级（四键）冷启动：直接决定 Embedding 行有没有被训过，比商品级更贴近
+# 模型实际看到的东西 —— time 协议下商品可能出现过、但该四键组合没出现过。
+train_skeys = set(seq_skey[train_idx].tolist())
+skey_cold_mask = np.array([c not in train_skeys for c in seq_skey[test_idx]])
 print(f"  训练序列 {len(train_idx)} / 测试序列 {len(test_idx)}")
 print(f"  测试集中「训练期未见过的商品」: {int(cold_mask.sum())} / {len(test_idx)}"
       f" ({cold_mask.mean() * 100:.1f}%)")
+print(f"  测试集中「训练期未见过的四键序列」: {int(skey_cold_mask.sum())} / {len(test_idx)}"
+      f" ({skey_cold_mask.mean() * 100:.1f}%)")
 
 X_cat_train, X_cont_train, y_train = X_cat[train_idx], X_cont[train_idx], y[train_idx]
 X_cat_test, X_cont_test, y_test = X_cat[test_idx], X_cont[test_idx], y[test_idx]
@@ -386,8 +472,8 @@ train_dataset = torch.utils.data.TensorDataset(X_cat_train_tensor, X_cont_train_
 # 训练集的洗牌必须用显式播种的 Generator，否则 --seed 对训练无效
 _rng = torch.Generator()
 _rng.manual_seed(args.seed)
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
-                          generator=_rng)  # 增大batch_size
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                          generator=_rng)
 test_dataset = torch.utils.data.TensorDataset(X_cat_test_tensor, X_cont_test_tensor, y_test_tensor)
 test_loader = DataLoader(
     test_dataset,
@@ -481,10 +567,17 @@ class LSTMTransformer(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 获取每个类别特征的唯一值数量
-
+#
+# 【为什么固定写成 len(classes_) + 1】训练期未见过的类别被映射到预留槽位
+# len(classes_)，所以 Embedding 行数恒为 len(classes_)+1，与是否真的出现
+# 未见类别无关。原实现写 max(df[col])+1：训练集恰好覆盖全部类别时该值退化为
+# len(classes_)，一旦出现未见类别（如 commodity 协议、或 time 协议下某些
+# 四键组合只在测试期出现）就变成 len(classes_)+1。app.py 侧按
+# len(classes_)+1 建模，两边必须严格一致，故这里改成不依赖数据的确定值。
 # 方案二：混合 LSTM + Transformer 模型
 model = LSTMTransformer(
-    num_embeddings_list=[int(df[col].max()) + 1 for col in categorical_cols],
+    num_embeddings_list=[len(label_encoders[col].classes_) + 1
+                         for col in categorical_cols],
     continuous_dim=len(continuous_cols),
     model_dim=128,
     hidden_size=128,
@@ -549,7 +642,7 @@ for epoch in range(epochs):
     scheduler.step(val_loss)
     val_losses.append(val_loss)
 
-    log_filename = f'training_Trade_Transformer_{args.trade_type}_{args.target}.log'
+    log_filename = os.path.join(save_path, f'training_{args.trade_type}_{args.target}.log')
     print(f"Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
     logging.basicConfig(filename=log_filename, level=logging.INFO)
     logging.info(f"Epoch {epoch + 1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}")
@@ -615,7 +708,7 @@ def evaluate(name, true, pred):
 # 评估
 target_name = "单价" if args.target == 'price' else "数量"
 r2_q, mse_q, mae_q = evaluate(target_name, true_renminbi, pred_renminbi)
-log_filename = f'training_Trade_Transformer_{args.trade_type}_{args.target}.log'
+log_filename = os.path.join(save_path, f'training_{args.trade_type}_{args.target}.log')
 logging.basicConfig(filename=log_filename, level=logging.INFO)
 time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 logging.info(f"datetime:{time}, R2:{r2_q}, MSE:{mse_q}, MAE:{mae_q}")
@@ -648,7 +741,48 @@ def _metrics(pred, name):
     return r2, mae, mape
 
 
-print(f"\n===== 模型 vs 朴素基线（测试集 n={len(true_o)}）=====")
+# =====================================================================
+# 【主判据】log 空间评估
+#
+# 目标跨 8~9 个数量级，去均值后 top1% 样本占原始空间平方和的 99% 左右。
+# 原始空间的 R² 因此被极少数极端样本支配：实测「上一期值」这条朴素基线
+#   进口-单价/time  log R2=+0.6908  ->  原始 R2=-0.0795
+#   出口-单价/time  log R2=+0.5627  ->  原始 R2=-0.7651
+#   出口-数量/time  log R2=+0.0313  ->  原始 R2=-3.4352
+# 而模型的损失函数（MSELoss）作用在「标准化后的 log 目标」上 —— 用原始空间
+# 的 R² 去评价一个在 log 空间训练的模型，口径本身就是错配的（评测报告 §6.5.2）。
+#
+# 故本脚本把 log 空间 R² 作为【主判据】，原始空间 R² 仅作参考，并在报告里
+# 明确标注两者分别是什么。判「模型是否具备预测能力」一律以 log 空间为准。
+# =====================================================================
+_y_te_log = np.asarray(y_true).ravel()
+_y_pr_log = np.asarray(y_pred).ravel()
+_res_log = {
+    '模型': r2_score(_y_te_log, _y_pr_log),
+    '上一期值(carry-forward)': r2_score(_y_te_log, np.asarray(baseline_prev).ravel()),
+    '季节均值(同月训练均值)': r2_score(_y_te_log, np.asarray(baseline_season).ravel()),
+    '全局均值(R2=0 参照)': r2_score(_y_te_log, np.asarray(baseline_global).ravel()),
+}
+print(f"\n===== 【主判据】log 空间（与损失函数同空间）  测试集 n={len(_y_te_log)} =====")
+for _k, _v in _res_log.items():
+    print(f"  {_k:<26} R2={_v:>10.4f}")
+
+_naive_log = {k: v for k, v in _res_log.items() if k != '模型'}
+_best_log_name, _best_log_r2 = max(_naive_log.items(), key=lambda kv: kv[1])
+_m_log_r2 = _res_log['模型']
+_edge_log = _m_log_r2 - _best_log_r2
+print(f"  最强朴素基线(log 空间): {_best_log_name} (R2={_best_log_r2:.4f})")
+if _m_log_r2 <= 0:
+    print(f"  [结论-不达标] 模型 log 空间 R2={_m_log_r2:.4f} <= 0，"
+          f"未跑赢「零信息」参照。")
+elif _m_log_r2 <= _best_log_r2:
+    print(f"  [结论-未超基线] 模型 log 空间 R2={_m_log_r2:.4f} 未超过最强朴素基线"
+          f"{_best_log_name}(R2={_best_log_r2:.4f})，差距 {_edge_log:+.4f}。")
+else:
+    print(f"  [结论-优于最强基线] 模型 log 空间 R2={_m_log_r2:.4f} > "
+          f"{_best_log_name}(R2={_best_log_r2:.4f})，优势 {_edge_log:+.4f}。")
+
+print(f"\n===== 【参考】原始空间（会被极端样本支配，不是主判据）n={len(true_o)} =====")
 _res = {
     '模型': _metrics(model_o, '模型'),
     '上一期值(carry-forward)': _metrics(prev_o, '上一期值(carry-forward)'),
@@ -714,7 +848,9 @@ if _season_gap < 1e-3:
 print(f"  最强朴素基线: {_best_name} (R2={_best_r2:.4f})")
 if _m_r2 <= 0:
     print(f"  [负 R2] 模型 R2={_m_r2:.4f} <= 0，未跑赢「零信息」参照（全局均值 R2≈0）。")
-    print(f"          本结果不支持「模型具备可用预测能力」，不得用作结项指标。")
+    print(f"          注意：这是【原始空间】口径，目标跨 8~9 个数量级、top1% 样本占"
+          f"原始空间平方和约 99%，该口径会被极少数极端样本支配。")
+    print(f"          模型是否具备预测能力请以本段上方的【主判据】log 空间结论为准。")
 elif _m_r2 <= _best_r2:
     print(f"  [未超基线] 模型 R2={_m_r2:.4f} 未超过最强朴素基线 {_best_name}"
           f"(R2={_best_r2:.4f})，差距 {_edge:+.4f}。")
@@ -725,11 +861,21 @@ else:
           f"不能仅凭「优于基线」下结论。")
 
 logging.basicConfig(filename=log_filename, level=logging.INFO)
-logging.info(f"split_mode:{args.split_mode}, n_train:{len(train_idx)}, n_test:{len(test_idx)}, "
-             f"cold_ratio:{cold_mask.mean()}, model_r2:{_res['模型'][0]}, "
-             f"prev_r2:{_res['上一期值(carry-forward)'][0]}, "
-             f"season_r2:{_res['季节均值'][0]}, global_r2:{_res['全局均值'][0]}, "
-             f"best_naive:{_best_name}, best_naive_r2:{_best_r2}, edge_vs_best:{_edge}")
+logging.info(
+    f"SUMMARY group_key:{args.group_key}, split_mode:{args.split_mode}, "
+    f"n_series:{df['_series_key'].nunique()}, n_train:{len(train_idx)}, "
+    f"n_test:{len(test_idx)}, cold_ratio_commodity:{cold_mask.mean()}, "
+    f"cold_ratio_series:{skey_cold_mask.mean()}, "
+    f"| LOG_SPACE model_r2:{_res_log['模型']}, "
+    f"prev_r2:{_res_log['上一期值(carry-forward)']}, "
+    f"season_r2:{_res_log['季节均值(同月训练均值)']}, "
+    f"global_r2:{_res_log['全局均值(R2=0 参照)']}, "
+    f"best_naive:{_best_log_name}, best_naive_r2:{_best_log_r2}, "
+    f"edge_vs_best:{_edge_log} "
+    f"| RAW_SPACE model_r2:{_res['模型'][0]}, "
+    f"prev_r2:{_res['上一期值(carry-forward)'][0]}, "
+    f"season_r2:{_res['季节均值'][0]}, global_r2:{_res['全局均值'][0]}, "
+    f"best_naive:{_best_name}, best_naive_r2:{_best_r2}, edge_vs_best:{_edge}")
 
 
 
@@ -809,6 +955,30 @@ with open(save_path + f'scaler_y_{args.target}.pkl', 'wb') as f:
 
 with open(save_path + f'label_encoders_{args.target}.pkl', 'wb') as f:
     pickle.dump(label_encoders, f)
+
+# =====================================================================
+# 保存「特征口径说明书」，由 app.py 在推理时读取。
+#
+# 为什么要落盘：连续特征的列顺序 / 是否含目标滞后特征 / 窗口长度这三件事，
+# 一旦训练侧改了而 app.py 侧写死的常量没跟着改，就会出现「形状能加载、
+# 语义已错位」的静默错误 —— 比直接报错更难发现。把口径写成产物、
+# 让推理端以产物为准，可以从结构上杜绝训练/推理漂移。
+# =====================================================================
+feature_spec = {
+    'trade_type': args.trade_type,
+    'target': args.target,
+    'target_raw_col': target_cols[0],
+    'seq_length': seq_length,
+    'categorical_cols': list(categorical_cols),
+    'continuous_cols': list(continuous_cols),
+    'continuous_base': list(CONTINUOUS_BASE),
+    'ar_feature': args.ar_feature,
+    'group_key': args.group_key,
+    'split_mode': args.split_mode,
+}
+with open(save_path + f'feature_spec_{args.target}.pkl', 'wb') as f:
+    pickle.dump(feature_spec, f)
+print(f"已保存特征口径: {save_path}feature_spec_{args.target}.pkl")
 
 print("✅ 模型和预处理器已成功保存！")
 # 同步播放（程序会暂停直到播放结束）
