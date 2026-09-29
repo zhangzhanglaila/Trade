@@ -3,7 +3,8 @@
 """智能问答路由与引导的验收脚本（backend-main /ai/chat）。
 
 背景：此前问答链路存在「无论问什么都被判成贸易预测、输出全是同一段固定引导语」
-的问题。修复后有四条路由，本脚本逐条覆盖，并核对数据查询结果与数据库一致。
+的问题。修复后有四条路由，本脚本逐条覆盖，并核对数据查询结果与数据库一致；
+RAG 类问题还会校验「检索规模」口径（见 check_rag_scale）。
 
 用法（在服务器上执行）：
     python3 tools/qa_chat_accept.py
@@ -42,6 +43,42 @@ def ask(base, text, timeout=180):
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)
+
+
+def check_rag_scale(data):
+    """核对 RAG 来源的「检索规模」口径是否自洽。
+
+    此前 sources 只回 topK(=5) 条，用户看到 5 行就以为「一共只检索到 5 条」。
+    现在候选条数与进上下文的条数分开，本函数守住三条不变量：
+      1) corpusSize 如实反映语料规模（用于告诉用户「在多少条里检索」）；
+      2) sources 条数 > 进上下文的条数（否则用户仍看不到检索规模）；
+      3) usedInContext 恰好在相关度最高的前 contextDocs 条上为真。
+    """
+    srcs = data.get("sources") or []
+    total = data.get("corpusSize")
+    ctx = data.get("contextDocs")
+    used = sum(1 for s in srcs if s.get("usedInContext"))
+    print("      sources: 候选=%s 语料=%s 进上下文=%s（标记已引用 %s 条）"
+          % (len(srcs), total, ctx, used))
+
+    problems = []
+    if not srcs:
+        problems.append("sources 为空")
+    if not total or total <= 0:
+        problems.append("corpusSize 未填充")
+    if ctx is None:
+        problems.append("contextDocs 未填充")
+    elif used != ctx:
+        problems.append("usedInContext 标记数(%s) != contextDocs(%s)" % (used, ctx))
+    if srcs and total and len(srcs) >= total:
+        problems.append("候选条数(%s) 不应达到语料总量(%s)" % (len(srcs), total))
+    flags = [bool(s.get("usedInContext")) for s in srcs]
+    if flags != sorted(flags, reverse=True):
+        problems.append("usedInContext 未按相关度顺序连续分布")
+    if problems:
+        print("      ! " + "；".join(problems))
+        return 1
+    return 0
 
 
 def main():
@@ -84,6 +121,9 @@ def main():
         pr = data.get("predictResult")
         if pr:
             print("      predict: value=%s unit=%s" % (pr.get("value"), pr.get("unit")))
+
+        if route == "RAG_NEWS":
+            failed += check_rag_scale(data)
 
     print("\n%s  （%d 项，失败 %d 项）"
           % ("全部通过" if failed == 0 else "存在失败", len(CASES), failed))
