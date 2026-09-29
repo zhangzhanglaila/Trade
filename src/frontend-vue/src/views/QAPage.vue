@@ -158,13 +158,13 @@
 
       <!--
         等待作答的占位气泡。
-        后端 /ai/chat 是**单次 POST、非流式**，一次 RAG 问答端到端要 1~2 秒，
-        预测类还可能更久。此前这段时间界面上毫无变化，用户会以为没点动。
+        已改为 SSE 流式：预测类会在后端分阶段推送进度，实时更新下方的文案
+        （正在查询历史数据 → 正在整理预测结果），用户能看到推进，不再以为卡死。
       -->
       <div v-if="sending" class="msg assistant">
         <div class="bubble bubble-thinking">
           <a-spin size="small" />
-          <span class="thinking-text">正在深度思考</span>
+          <span class="thinking-text">{{ thinkingStage || '正在深度思考' }}</span>
           <span class="thinking-dots"><i></i><i></i><i></i></span>
         </div>
       </div>
@@ -192,7 +192,7 @@ import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import MarkdownIt from 'markdown-it'
 import DOMPurifyDefault from 'dompurify'
-import { chat } from '@/api/ai'
+import { chatStream } from '@/api/ai'
 
 // ---------------------------------------------------------------------------
 // Markdown 渲染
@@ -273,6 +273,10 @@ const predictForm = reactive({
 const messages = ref([])
 const inputText = ref('')
 const sending = ref(false)
+
+// 流式问答进行中，展示给用户的当前阶段文案（如「正在查询历史数据」）。
+// 为空时显示默认的「正在深度思考」。
+const thinkingStage = ref('')
 
 // 上一轮对话状态，用于识别「补全式追问」。
 // 场景：用户问「预测…」得到「还缺贸易方式/注册地」的引导，紧接着只回一个
@@ -493,10 +497,15 @@ async function send() {
   inputText.value = ''
 
   sending.value = true
+  thinkingStage.value = ''
   scrollToBottom()
   const t0 = Date.now()
   try {
-    const data = await chat(buildPayload(text))
+    // 流式接收：预测类会在后端分阶段推送进度，实时更新占位文案，
+    // 让用户看到「正在查询历史数据 → 正在整理预测结果」的推进，而不是干等。
+    const data = await chatStream(buildPayload(text), (stage) => {
+      thinkingStage.value = stage || ''
+    })
     await holdThinking(t0)
     pushAssistant(data?.answer || '（无回答）', data)
     lastTurn.value = {
@@ -511,6 +520,7 @@ async function send() {
     pushAssistant(`调用失败：${msg}`)
   } finally {
     sending.value = false
+    thinkingStage.value = ''
     scrollToBottom()
   }
 }

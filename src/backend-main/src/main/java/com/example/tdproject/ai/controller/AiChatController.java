@@ -12,17 +12,22 @@ import com.example.tdproject.ai.rag.NewsRagService;
 import com.example.tdproject.ai.rag.RagAnswer;
 import com.example.tdproject.utils.Result;
 import com.example.tdproject.utils.ResultCodeEnum;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 智能问答统一入口。
@@ -46,62 +51,181 @@ public class AiChatController {
     private final PredictionService predictionService;
     private final NewsRagService newsRagService;
     private final TradeDataQueryService tradeDataQueryService;
+    private final ObjectMapper objectMapper;
 
+    /**
+     * 非流式问答（原有入口，行为不变）。
+     */
     @PostMapping("/chat")
     public Result<AiChatResponse> chat(@RequestBody AiChatRequest req) {
         try {
             IntentResult intent = intentRouter.route(req);
-            String route = intent.getRoute();
+            return Result.build(chatCore(intent, req));
+        } catch (IllegalArgumentException e) {
+            return Result.build(ResultCodeEnum.ARGUMENT_VALID_ERROR, e.getMessage());
+        } catch (Exception e) {
+            log.error("/ai/chat 异常", e);
+            return Result.build(ResultCodeEnum.SERVICE_ERROR, e.getMessage());
+        }
+    }
 
-            Map<String, Object> debug = new HashMap<>();
-            debug.put("intent", intent);
+    /**
+     * SSE 流式问答入口，与 {@link #chat(AiChatRequest)} 共用同一套路由与槽位逻辑。
+     *
+     * <p>差别只在：预测这条「点发送后要等好几秒」的链路，会把中间进度实时推给前端，
+     * 避免用户盯着一个静止的界面误以为卡死。其余分支不慢，直接一次性推最终结果。</p>
+     *
+     * <p>事件协议（text/event-stream，每条 <code>data:</code> 一行 JSON）：</p>
+     * <ul>
+     *   <li>{@code {"type":"stage","msg":"..."}} —— 阶段进度；</li>
+     *   <li>{@code {"type":"done","data":{...}}} —— 最终结果（AiChatResponse）；</li>
+     *   <li>{@code {"type":"error","msg":"..."}} —— 出错。</li>
+     * </ul>
+     */
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@RequestBody AiChatRequest req) {
+        // timeout=0 表示不设超时；前端断开时 send 会抛异常，届时 complete 收尾。
+        SseEmitter emitter = new SseEmitter(0L);
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 点发送后立刻反馈一句，覆盖「意图分类 + 槽位抽取」这段最长的静默期
+                //（实测 DeepSeek 做这一步约 1~2 秒，此前前端完全没有输出）。
+                emitStage(emitter, "正在理解你的问题");
+                IntentResult intent = intentRouter.route(req);
+                String route = intent.getRoute();
 
-            // ---------------- 预测 ----------------
-            if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
-                var slots = intent.getPredictSlots();
-                List<String> hints = collectPredictHints(slots);
-                // 槽位即便齐全，商品名也可能是俗称（如「奶制品」），库里并无这个
-                // 精确名称。若不拦截，会把俗称原样传给 Flask，得到 404「组合无历史数据」，
-                // 用户只看到一句冷冰冰的报错，不知道该怎么改。这里在调预测前先核对
-                // 商品名是否精确存在于库中，不存在就转入引导、给出规范名候选。
-                boolean productUnresolved = slots != null
-                        && !isBlank(slots.getProductName())
-                        && !isBlank(slots.getTradeType())
-                        && !tradeDataQueryService.productExists(
-                                slots.getTradeType(), slots.getProductName());
-                if (!hints.isEmpty() || productUnresolved) {
-                    if (hints.isEmpty() && productUnresolved) {
-                        hints.add("商品名称");
+                // ---------------- 预测：需要流式进度 ----------------
+                if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
+                    var slots = intent.getPredictSlots();
+                    List<String> hints = collectPredictHints(slots);
+                    boolean productUnresolved = slots != null
+                            && !isBlank(slots.getProductName())
+                            && !isBlank(slots.getTradeType())
+                            && !tradeDataQueryService.productExists(
+                                    slots.getTradeType(), slots.getProductName());
+                    if (!hints.isEmpty() || productUnresolved) {
+                        if (hints.isEmpty() && productUnresolved) {
+                            hints.add("商品名称");
+                        }
+                        emitDone(emitter, AiChatResponse.builder()
+                                .route(IntentRouter.ROUTE_PREDICT)
+                                .answer(buildPredictGuidance(slots, hints))
+                                .hints(hints)
+                                .predictResult(null)
+                                .sources(null)
+                                .debugInfo(debugMap(intent))
+                                .build());
+                        emitter.complete();
+                        return;
                     }
-                    // 关键：把「缺什么」和「库里实际有什么」一起给出来。此前只给一段
-                    // 固定模板，用户照着补也不知道商品名该写什么，于是反复得到同一句话。
-                    return Result.build(AiChatResponse.builder()
+
+                    // 槽位齐全，进入真正预测。Flask 纯 CPU 推理 + 反变换是主要耗时，
+                    // 分阶段推送，让前端持续有反馈。
+                    emitStage(emitter, "正在查询历史数据");
+                    var predict = predictionService.predict(slots);
+                    emitStage(emitter, "正在整理预测结果");
+
+                    emitDone(emitter, AiChatResponse.builder()
                             .route(IntentRouter.ROUTE_PREDICT)
-                            .answer(buildPredictGuidance(slots, hints))
-                            .hints(hints)
-                            .predictResult(null)
+                            .answer(buildPredictAnswer(predict, slots))
+                            .predictResult(predict)
                             .sources(null)
-                            .debugInfo(debug)
+                            .debugInfo(debugMap(intent))
                             .build());
+                    emitter.complete();
+                    return;
                 }
 
-                var predict = predictionService.predict(slots);
+                // ---------------- 其余分支：复用核心逻辑，一次性返回 ----------------
+                emitDone(emitter, chatCore(intent, req));
+                emitter.complete();
 
-                return Result.build(AiChatResponse.builder()
+            } catch (IllegalArgumentException e) {
+                emitError(emitter, e.getMessage());
+            } catch (Exception e) {
+                log.error("/ai/chat/stream 异常", e);
+                emitError(emitter, e.getMessage());
+            }
+        });
+        return emitter;
+    }
+
+    // =================================================================
+    // 核心分发（chat 与 chatStream 共用）
+    // =================================================================
+
+    private Map<String, Object> debugMap(IntentResult intent) {
+        Map<String, Object> debug = new HashMap<>();
+        debug.put("intent", intent);
+        return debug;
+    }
+
+    private AiChatResponse chatCore(IntentResult intent, AiChatRequest req) {
+        String route = intent.getRoute();
+        Map<String, Object> debug = debugMap(intent);
+
+        // ---------------- 预测 ----------------
+        if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
+            var slots = intent.getPredictSlots();
+            List<String> hints = collectPredictHints(slots);
+            // 槽位即便齐全，商品名也可能是俗称（如「奶制品」），库里并无这个
+            // 精确名称。若不拦截，会把俗称原样传给 Flask，得到 404「组合无历史数据」，
+            // 用户只看到一句冷冰冰的报错，不知道该怎么改。这里在调预测前先核对
+            // 商品名是否精确存在于库中，不存在就转入引导、给出规范名候选。
+            boolean productUnresolved = slots != null
+                    && !isBlank(slots.getProductName())
+                    && !isBlank(slots.getTradeType())
+                    && !tradeDataQueryService.productExists(
+                            slots.getTradeType(), slots.getProductName());
+            if (!hints.isEmpty() || productUnresolved) {
+                if (hints.isEmpty() && productUnresolved) {
+                    hints.add("商品名称");
+                }
+                return AiChatResponse.builder()
                         .route(IntentRouter.ROUTE_PREDICT)
-                        .answer(buildPredictAnswer(predict, slots))
-                        .predictResult(predict)
+                        .answer(buildPredictGuidance(slots, hints))
+                        .hints(hints)
+                        .predictResult(null)
                         .sources(null)
                         .debugInfo(debug)
-                        .build());
+                        .build();
             }
 
-            // ---------------- 历史数据查询 ----------------
-            if (IntentRouter.ROUTE_DATA_QUERY.equalsIgnoreCase(route)) {
-                var slots = intent.getPredictSlots();
-                String qTradeType = slots != null ? slots.getTradeType() : null;
-                DataQueryResult data = tradeDataQueryService.query(
-                        qTradeType,
+            var predict = predictionService.predict(slots);
+
+            return AiChatResponse.builder()
+                    .route(IntentRouter.ROUTE_PREDICT)
+                    .answer(buildPredictAnswer(predict, slots))
+                    .predictResult(predict)
+                    .sources(null)
+                    .debugInfo(debug)
+                    .build();
+        }
+
+        // ---------------- 历史数据查询 ----------------
+        if (IntentRouter.ROUTE_DATA_QUERY.equalsIgnoreCase(route)) {
+            var slots = intent.getPredictSlots();
+            String qTradeType = slots != null ? slots.getTradeType() : null;
+            DataQueryResult data = tradeDataQueryService.query(
+                    qTradeType,
+                    slots != null ? slots.getTarget() : null,
+                    slots != null ? slots.getYear() : null,
+                    slots != null ? slots.getMonth() : null,
+                    slots != null ? slots.getTradePartnerName() : null,
+                    slots != null ? slots.getProductName() : null,
+                    slots != null ? slots.getTradeMode() : null,
+                    slots != null ? slots.getRegisterName() : null);
+
+            // ---- 方向自动重试 ----
+            boolean emptyHit = data.getRows() != null && data.getRows().isEmpty()
+                    && data.getSummary() != null && data.getSummary().startsWith("库里没有");
+            boolean textHasDirection = req.getText() != null
+                    && (req.getText().contains("进口") || req.getText().contains("出口")
+                        || req.getText().contains("外销") || req.getText().contains("出海"));
+            if (emptyHit && !textHasDirection && qTradeType != null) {
+                String other = "in".equals(qTradeType) ? "out" : "in";
+                DataQueryResult retry = tradeDataQueryService.query(
+                        other,
                         slots != null ? slots.getTarget() : null,
                         slots != null ? slots.getYear() : null,
                         slots != null ? slots.getMonth() : null,
@@ -109,94 +233,93 @@ public class AiChatController {
                         slots != null ? slots.getProductName() : null,
                         slots != null ? slots.getTradeMode() : null,
                         slots != null ? slots.getRegisterName() : null);
-
-                // ---- 方向自动重试 ----
-                // 问题没提「进口/出口」时，规则层按约定不猜方向；此时方向多半来自
-                // LLM 槽位抽取的猜测（如「千克对应多少人民币」被猜成 in）。
-                // 若该方向查不到数据而另一方向有 —— 直接回「库里没有」是答非所问，
-                // 拿另一方向再查一次，命中则在答案开头注明实际采用的方向。
-                // 仅在「问题文本本身不含方向词」时才重试：用户明说了进口，
-                // 查不到就该如实说没有（或给候选建议），不能悄悄换成出口的数。
-                boolean emptyHit = data.getRows() != null && data.getRows().isEmpty()
-                        && data.getSummary() != null && data.getSummary().startsWith("库里没有");
-                boolean textHasDirection = req.getText() != null
-                        && (req.getText().contains("进口") || req.getText().contains("出口")
-                            || req.getText().contains("外销") || req.getText().contains("出海"));
-                if (emptyHit && !textHasDirection && qTradeType != null) {
-                    String other = "in".equals(qTradeType) ? "out" : "in";
-                    DataQueryResult retry = tradeDataQueryService.query(
-                            other,
-                            slots != null ? slots.getTarget() : null,
-                            slots != null ? slots.getYear() : null,
-                            slots != null ? slots.getMonth() : null,
-                            slots != null ? slots.getTradePartnerName() : null,
-                            slots != null ? slots.getProductName() : null,
-                            slots != null ? slots.getTradeMode() : null,
-                            slots != null ? slots.getRegisterName() : null);
-                    if (retry.getRows() != null && !retry.getRows().isEmpty()) {
-                        String dirCn = "out".equals(other) ? "出口" : "进口";
-                        data = retry;
-                        data.setSummary("（问题未指明进出口方向，已按「" + dirCn
-                                + "」查得。）\n\n" + retry.getSummary());
-                    }
+                if (retry.getRows() != null && !retry.getRows().isEmpty()) {
+                    String dirCn = "out".equals(other) ? "出口" : "进口";
+                    data = retry;
+                    data.setSummary("（问题未指明进出口方向，已按「" + dirCn
+                            + "」查得。）\n\n" + retry.getSummary());
                 }
-
-                return Result.build(AiChatResponse.builder()
-                        .route(IntentRouter.ROUTE_DATA_QUERY)
-                        .answer(data.getSummary())
-                        .dataQuery(data)
-                        .sources(null)
-                        .predictResult(null)
-                        .debugInfo(debug)
-                        .build());
             }
 
-            // ---------------- 数据范围（能访问哪些数据） ----------------
-            // 回答从库里现算（伙伴清单 / 时间范围 / 记录数 / 商品数），不是模板。
-            // 此前这类问题落到 CHITCHAT，拿到的是一段写死的能力说明，
-            // 里面既没有国家清单、日期也是硬编码，属于答非所问。
-            if (IntentRouter.ROUTE_SCOPE.equalsIgnoreCase(route)) {
-                return Result.build(AiChatResponse.builder()
-                        .route(IntentRouter.ROUTE_SCOPE)
-                        .answer(tradeDataQueryService.scopeAnswer())
-                        .sources(null)
-                        .predictResult(null)
-                        .debugInfo(debug)
-                        .build());
-            }
-
-            // ---------------- 闲聊 / 能力询问 ----------------
-            if (IntentRouter.ROUTE_CHITCHAT.equalsIgnoreCase(route)) {
-                return Result.build(AiChatResponse.builder()
-                        .route(IntentRouter.ROUTE_CHITCHAT)
-                        .answer(buildCapabilityAnswer())
-                        .sources(null)
-                        .predictResult(null)
-                        .debugInfo(debug)
-                        .build());
-            }
-
-            // ---------------- 默认：RAG ----------------
-            String country = req != null ? req.getCountry() : null;
-            Integer year = req != null ? req.getYear() : null;
-
-            RagAnswer rag = newsRagService.answer(req.getText(), country, year);
-
-            return Result.build(AiChatResponse.builder()
-                    .route(IntentRouter.ROUTE_RAG_NEWS)
-                    .answer(rag.getAnswer())
-                    .sources(rag.getSources())
-                    .corpusSize(rag.getCorpusSize())
-                    .contextDocs(rag.getContextDocs())
+            return AiChatResponse.builder()
+                    .route(IntentRouter.ROUTE_DATA_QUERY)
+                    .answer(data.getSummary())
+                    .dataQuery(data)
+                    .sources(null)
                     .predictResult(null)
                     .debugInfo(debug)
-                    .build());
+                    .build();
+        }
 
-        } catch (IllegalArgumentException e) {
-            return Result.build(ResultCodeEnum.ARGUMENT_VALID_ERROR, e.getMessage());
-        } catch (Exception e) {
-            log.error("/ai/chat 异常", e);
-            return Result.build(ResultCodeEnum.SERVICE_ERROR, e.getMessage());
+        // ---------------- 数据范围 ----------------
+        if (IntentRouter.ROUTE_SCOPE.equalsIgnoreCase(route)) {
+            return AiChatResponse.builder()
+                    .route(IntentRouter.ROUTE_SCOPE)
+                    .answer(tradeDataQueryService.scopeAnswer())
+                    .sources(null)
+                    .predictResult(null)
+                    .debugInfo(debug)
+                    .build();
+        }
+
+        // ---------------- 闲聊 / 能力询问 ----------------
+        if (IntentRouter.ROUTE_CHITCHAT.equalsIgnoreCase(route)) {
+            return AiChatResponse.builder()
+                    .route(IntentRouter.ROUTE_CHITCHAT)
+                    .answer(buildCapabilityAnswer())
+                    .sources(null)
+                    .predictResult(null)
+                    .debugInfo(debug)
+                    .build();
+        }
+
+        // ---------------- 默认：RAG ----------------
+        String country = req != null ? req.getCountry() : null;
+        Integer year = req != null ? req.getYear() : null;
+
+        RagAnswer rag = newsRagService.answer(req.getText(), country, year);
+
+        return AiChatResponse.builder()
+                .route(IntentRouter.ROUTE_RAG_NEWS)
+                .answer(rag.getAnswer())
+                .sources(rag.getSources())
+                .corpusSize(rag.getCorpusSize())
+                .contextDocs(rag.getContextDocs())
+                .predictResult(null)
+                .debugInfo(debug)
+                .build();
+    }
+
+    // =================================================================
+    // SSE 推送辅助
+    // =================================================================
+
+    private void emitStage(SseEmitter emitter, String msg) {
+        send(emitter, Map.of("type", "stage", "msg", msg == null ? "" : msg));
+    }
+
+    private void emitDone(SseEmitter emitter, AiChatResponse data) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", "done");
+        payload.put("data", data);
+        send(emitter, payload);
+    }
+
+    private void emitError(SseEmitter emitter, String msg) {
+        send(emitter, Map.of("type", "error", "msg", msg == null ? "未知错误" : msg));
+        try {
+            emitter.complete();
+        } catch (Exception ignore) {
+        }
+    }
+
+    private void send(SseEmitter emitter, Map<String, Object> payload) {
+        try {
+            emitter.send(SseEmitter.event().data(objectMapper.writeValueAsString(payload),
+                    MediaType.APPLICATION_JSON));
+        } catch (IOException e) {
+            // 前端断开时 send 会抛异常；这里吞掉，由调用方 complete 收尾即可。
+            log.debug("SSE 推送失败（前端可能已断开）: {}", e.getMessage());
         }
     }
 
@@ -229,11 +352,7 @@ public class AiChatController {
             sb.append("\n注意：").append(predict.getRaw().get("warning"));
         }
 
-        // 远期月份可靠性警示：模型的输入序列是「目标月之前」的历史，目标月本身
-        // 不进入模型（fetch_history 只用它过滤历史）。数据末期是 2025-03，问
-        // 2027-01 与问 2025-04 喂给模型的是同一段历史、得到同一个数 —— 若不加这句，
-        // 用户会误以为那是模型对 2027 年的真实判断。凡是目标月越过数据末期 + 1 个月
-        // 的，都如实标注。
+        // 远期月份可靠性警示
         if (slots != null && slots.getYear() != null && slots.getMonth() != null) {
             int targetYm = slots.getYear() * 100 + slots.getMonth();
             int maxYm = tradeDataQueryService.maxDataYm(slots.getTradeType());
@@ -272,10 +391,6 @@ public class AiChatController {
 
     /**
      * 预测槽位不全时的引导语。
-     *
-     * <p>与旧版的区别：旧版无论缺几项、缺哪项，都给同一段「可以这样问：…」，
-     * 用户的主观感受就是「所有问题输出都一样」。现在会逐项列出已识别/还缺，
-     * 并在商品名不在库中时直接给出规范名候选、在该商品已有维度上给出可选值。</p>
      */
     private String buildPredictGuidance(PredictRequest s, List<String> missing) {
         StringBuilder sb = new StringBuilder();
@@ -298,7 +413,7 @@ public class AiChatController {
         }
         sb.append("· 还缺：").append(String.join("、", missing)).append("\n");
 
-        // 商品名核对 —— 这是用户最常写错、也最无从下手的一项
+        // 商品名核对
         if (s != null && !isBlank(s.getProductName()) && !isBlank(s.getTradeType())) {
             List<String> near = tradeDataQueryService.suggestProducts(
                     s.getTradeType(), s.getProductName(), 5);
@@ -338,8 +453,7 @@ public class AiChatController {
             }
         }
 
-        // 商品名是俗称时，示例句别再原样用「奶制品」——那正是用户要改掉的词。
-        // 用第一个规范候选顶上，用户照抄即可命中库里真实商品。
+        // 商品名是俗称时，示例句用第一个规范候选顶上
         String exampleProduct = null;
         if (s != null && !isBlank(s.getProductName()) && !isBlank(s.getTradeType())) {
             List<String> top = tradeDataQueryService.suggestProducts(
@@ -382,9 +496,6 @@ public class AiChatController {
                 + "2. 预测未来 —— 例如「预测哈萨克斯坦铜矿砂及其精矿、一般贸易、"
                 + "新疆维吾尔自治区的下个月进口单价」\n"
                 + "3. 新闻问答 —— 例如「最近有哪些关于哈萨克斯坦的新闻」\n\n"
-                // 数据范围改为从库里现算。此前这里把「覆盖 2015-01 ~ 2025-03」
-                // 硬编码在字符串里，且从不提有哪些国家，用户问「有什么国家的数据
-                // 可以访问」就得到一段答非所问的话。
                 + "**可访问的数据范围**：" + tradeDataQueryService.scopeSummary() + "\n\n"
                 + "预测需要贸易伙伴、商品名称、贸易方式、境内注册地四项齐全，"
                 + "缺哪项我会告诉你库里实际有哪些可选值。";
