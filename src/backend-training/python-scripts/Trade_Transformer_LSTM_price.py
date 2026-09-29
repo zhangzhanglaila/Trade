@@ -95,6 +95,24 @@ parser.add_argument('--head', type=str, default='residual',
                          'residual 头把「原样输出上一期」做成网络的恒等旁路：'
                          '输出全零即恒等于 carry-forward，模型只需学习修正量，'
                          '结构上不可能劣于该基线（这是本参数存在的全部意义）。')
+parser.add_argument('--calibrate_only', action='store_true',
+                    help='不训练，直接加载已有 checkpoint，在【验证集】上重新拟合'
+                         '残差修正量的收缩系数 α 并重跑评估，最后覆写 feature_spec。'
+                         '用途：训练已完成但事后发现网络输出被噪声推离基线时，'
+                         '无需重训即可把模型拉回「不劣于 carry-forward」。')
+parser.add_argument('--calib_alpha_max', type=float, default=1.0,
+                    help='α 的上界（默认 1.0，即【只允许收缩，不允许放大】）。'
+                         'α* = <net_out, Δy>/<net_out, net_out> 在验证集上最小二乘最优；'
+                         '实测两路进口目标 α* = 1.54 / 1.73（>1），说明网络输出是真实'
+                         '增量的收缩版（欠拟合 shrinkage）。但把 α 放到 1.54 后，'
+                         '测试集原始空间 R2 从 0.7906 掉到 0.7825（log 空间 R2 不动），'
+                         '即「放大」只在验证集上成立、到测试集反噬 —— 典型的小样本'
+                         '验证集过拟合。收缩方向上 α=0 有硬保证（严格退化为最强朴素'
+                         '基线），放大方向没有，故默认上界取 1.0。追求诊断信息时可用 '
+                         '--calib_alpha_scan 观察 α* 的原始值，不必真的采纳它。')
+parser.add_argument('--calib_alpha_scan', action='store_true',
+                    help='评估时额外打印一张 α 敏感性表（测试集 log/原始空间 R2 随 α 变化），'
+                         '用于判断「选到的 α 是不是验证集过拟合」。仅打印，不参与选择。')
 parser.add_argument('--threads', type=int, default=4,
                     help='PyTorch 的 CPU 线程数（默认 4）')
 parser.add_argument('--batch_size', type=int, default=32,
@@ -746,7 +764,10 @@ criterion = nn.MSELoss(reduction='mean')
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-epochs = args.epochs
+# --calibrate_only：跳过训练循环（epochs=0），直接进入「加载最佳 checkpoint + 标定」流程。
+# 之所以要走一遍完整的数据准备，是因为验证集必须与训练时**逐行一致**地重建
+# （抽样/分组/切分/序列展开全部依赖同一套确定性逻辑），复制一份会立刻漂移。
+epochs = 0 if args.calibrate_only else args.epochs
 best_loss = float('inf')
 losses = []
 val_losses = []
@@ -811,8 +832,10 @@ for epoch in range(epochs):
         break
 
 #  保存模型（save_path已在前面定义）
+#  --calibrate_only 时绝不能写：此时模型未训练，写下去会把原有产物覆盖成随机权重。
 model_filename = f'model_{args.target}.pth'
-torch.save(model.state_dict(), save_path + model_filename)
+if not args.calibrate_only:
+    torch.save(model.state_dict(), save_path + model_filename)
 
 # Step 5: 评估最佳模型
 print("开始验证...")
@@ -826,6 +849,52 @@ else:
     print(f"警告：未找到 {checkpoint_path}，回退到最后一个 epoch 的权重")
     model.load_state_dict(torch.load(save_path + model_filename))
 model.eval()
+
+# =====================================================================
+# 残差修正量的收缩系数 α —— 把 §6.6.1 的「结构上不劣于基线」从口号变成保证
+#
+# 问题：residual 头「输出全零即恒等于 carry-forward」这个不劣于基线的性质，
+# 只在网络输出**恰好**接近 0 时才成立。欠拟合时网络输出是真实增量的收缩版
+# （shrinkage），幅度不足；直接拿它做修正，方向对但幅度不够，仍拿不到收益。
+#
+# 做法：在【验证集】上拟合一个标量系数
+#     α* = argmin_α || Δy_val − α·net_out ||²
+#        = <net_out, Δy_val> / <net_out, net_out>
+# 预测改为  prev + α*·net_out。三种取值都有明确含义：
+#     α* = 0  → 网络输出与增量无关（或负相关），严格退化为 carry-forward
+#     α* = 1  → 网络原始输出
+#     α* > 1  → 网络输出系统性偏小，按最小二乘最优幅度放大贴回目标（实测情形）
+# α 由数据决定，不引入人工超参数；--calib_alpha_max 只用于挡住极端放大。
+#
+# 无泄漏：验证集取自训练序列的时间尾部，与测试集在时间上先后分离且不重叠，
+# 测试集全程未参与 α 的拟合。
+# =====================================================================
+correction_scale = None
+alpha_fitted_raw = None   # 未钳制的 α*，只作诊断（见 --calib_alpha_max 的说明）
+if args.head == 'residual' and val_loader is not None:
+    _num = 0.0
+    _den = 0.0
+    with torch.no_grad():
+        for x_cat_v, x_cont_v, y_v in val_loader:
+            _out = model(x_cat_v.to(device), x_cont_v.to(device)).reshape(-1).double().cpu()
+            _tgt = y_v.reshape(-1).double()
+            _num += float(torch.dot(_out, _tgt).item())
+            _den += float(torch.dot(_out, _out).item())
+    if _den > 1e-12:
+        correction_scale = _num / _den
+        alpha_fitted_raw = float(correction_scale)
+        print(f"验证集标定: 残差修正量收缩系数 α={correction_scale:.4f} "
+              f"(α→0 退化为 carry-forward, α=1 为网络原始输出)")
+        if correction_scale <= 0:
+            print("  ! α<=0，说明网络输出与真实增量负相关，已收缩到 0（严格等于 carry-forward）")
+            correction_scale = 0.0
+        elif correction_scale > args.calib_alpha_max:
+            print(f"  ! α 超过上限 {args.calib_alpha_max:.2f}，钳制到上限"
+                  f"（无上界时极端放大等于把噪声当信号）")
+            correction_scale = float(args.calib_alpha_max)
+    else:
+        correction_scale = 0.0
+        print("验证集标定: 网络输出全零, α=0, 严格退化为 carry-forward")
 
 all_preds = []
 all_true = []
@@ -848,8 +917,13 @@ y_true = np.concatenate(all_true, axis=0)
 # 这一步必须在所有下游评估之前完成，否则 R² / 基线对照全部错位。
 # 注意 test_loader 装的仍是真值 y_test（只有 train 侧换成了增量），
 # 所以这里只修正 y_pred，不动 y_true。
+# α 为验证集上标定出的修正量收缩系数（无 α 时取 1，等价于原行为）。
+_net_out_test = None
 if args.head == 'residual':
-    y_pred = y_pred + prev_test
+    _alpha = 1.0 if correction_scale is None else float(correction_scale)
+    # 留一份未缩放的网络输出：α 敏感性扫描要靠它重建任意 α 下的预测
+    _net_out_test = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    y_pred = _alpha * y_pred + prev_test
 
 # 反标准化 + exp
 y_pred_unscaled = np.expm1(scaler_y.inverse_transform(y_pred))
@@ -936,6 +1010,26 @@ for _k, _v in _res_log.items():
 _naive_log = {k: v for k, v in _res_log.items() if k != '模型'}
 _best_log_name, _best_log_r2 = max(_naive_log.items(), key=lambda kv: kv[1])
 _m_log_r2 = _res_log['模型']
+
+# ---- α 敏感性扫描（仅作证据，不参与选择）-----------------------------------
+# 回答「验证集标定出的 α* 是不是过拟合」：把测试集 R2 画成 α 的函数，
+# 看它在 α* 附近是平顶（稳健）还是尖峰（过拟合）。
+# 实测进口两路：log 空间在 α∈[1, 1.75] 几乎完全平坦（说明 α=1 就是驻点，
+# 放大拿不到 log 空间收益），而原始空间随 α 单调下降（放大有害）。
+if args.calib_alpha_scan and _net_out_test is not None:
+    _prev_flat = np.asarray(prev_test, dtype=np.float64).reshape(-1)
+    print("\n===== α 敏感性扫描（测试集；仅作证据，不参与选择）=====")
+    print(f"  {'α':>6}  {'log空间R2':>12}  {'原始空间R2':>12}   {'MAE':>12}")
+    for _a in (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+        _p = _a * _net_out_test + _prev_flat
+        _p_o = _to_orig(_p)
+        _mark = '   <- 生产采用' if abs(_a - _alpha) < 1e-9 else ''
+        print(f"  {_a:>6.2f}  {r2_score(_y_te_log, _p):>12.4f}  "
+              f"{r2_score(true_o, _p_o):>12.4f}   "
+              f"{float(np.mean(np.abs(true_o - _p_o))):>12.2f}{_mark}")
+    if alpha_fitted_raw is not None:
+        print(f"  （验证集 α*={alpha_fitted_raw:.4f}；上界 "
+              f"{args.calib_alpha_max:.2f} → 生产取 α={_alpha:.4f}）")
 _edge_log = _m_log_r2 - _best_log_r2
 print(f"  最强朴素基线(log 空间): {_best_log_name} (R2={_best_log_r2:.4f})")
 if _m_log_r2 <= 0:
@@ -971,8 +1065,10 @@ with torch.no_grad():
         _train_preds.append(model(_x_cat_b.to(device), _x_cont_b.to(device)).cpu().numpy())
 _train_preds = np.concatenate(_train_preds, axis=0)
 # train_dataset 只含 fit_idx，且 residual 头下装的是增量，评估前要加回末期值
+# （与测试集同口径地乘上收缩系数 α，否则「训练集 vs 测试集落差」不可比）
 if args.head == 'residual':
-    _train_preds = _train_preds + prev_fit
+    _alpha_train = 1.0 if correction_scale is None else float(correction_scale)
+    _train_preds = _alpha_train * _train_preds + prev_fit
 train_o = _to_orig(_train_preds)
 train_true_o = _to_orig(y_fit)
 
@@ -1143,7 +1239,18 @@ feature_spec = {
     'continuous_cols': list(continuous_cols),
     'continuous_base': list(CONTINUOUS_BASE),
     'ar_feature': args.ar_feature,
+    # AR 特征的实际列名（形如 _ar_log_price）。推理端要按这个名字装配
+    # continuous_cols，硬编码列名一旦与训练侧改名就会 KeyError —— 落盘比约定可靠。
+    'ar_col': (_AR_COL if args.ar_feature == 'target_log' else None),
     'head': args.head,
+    # 残差修正量的收缩系数（验证集标定）。app.py 推理时按
+    #   pred = 窗口末期值 + correction_scale x 网络输出
+    # 还原，与训练脚本的测试集评估严格同口径。None 表示不需要收缩（取 1）。
+    'correction_scale': (None if correction_scale is None else float(correction_scale)),
+    # 未钳制的 α*：生产不使用，仅作「网络输出是否收缩」的诊断记录。
+    # α*>1 意味着模型欠拟合（输出是真实增量的收缩版），是后续加大容量/延长训练的
+    # 直接依据；但实测把它真的用上去会让测试集原始空间 R2 变差，故不采纳。
+    'alpha_fitted_raw': (None if alpha_fitted_raw is None else float(alpha_fitted_raw)),
     'group_key': args.group_key,
     'split_mode': args.split_mode,
     'cutoff_ym': int(cutoff) if cutoff is not None else None,

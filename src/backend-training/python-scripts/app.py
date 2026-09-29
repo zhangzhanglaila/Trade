@@ -83,6 +83,9 @@ _LEGACY_SPEC = {
     'target_raw_col': '单价',
     'ar_feature': 'none',
     'head': 'direct',      # 旧产物是直接回归目标值，没有残差旁路
+    'correction_scale': None,   # 旧产物未做过验证集标定，等价于不收缩（取 1）
+    'continuous_base': ['year', 'month', '数量', '人民币'],
+    'ar_col': None,             # 旧产物 ar_feature=none，不存在目标滞后列
 }
 
 # 每 12 个月取一次，保证「最近 seq_length 个不同月份」都有机会被取到。
@@ -210,6 +213,7 @@ BUNDLES = {k: _load_bundle(k) for k in PATHS}
 for _k, _b in BUNDLES.items():
     _s = _b['spec']
     print(f"[INFO] {_k}: seq_length={_s['seq_length']} ar={_s.get('ar_feature')} "
+          f"head={_s.get('head')} alpha={_s.get('correction_scale')} "
           f"cont={len(_s['continuous_cols'])} cols={_s['continuous_cols']}")
 
 
@@ -401,11 +405,28 @@ def build_inputs(df, bundle):
 
     # 目标自身的滞后值：窗口每一期的 log1p(目标)，与训练侧 _AR_COL 同口径。
     # 只用 t-seq_length..t-1 的值，不含待预测的 t 期，无泄漏。
+    #
+    # AR 列名**不能硬编码**：训练侧生成的名字是 f'_ar_log_{target}'
+    # （见 price.py 的 `_AR_COL = f'_ar_log_{args.target}'`），早期这里写死
+    # '_ar_log'，与 feature_spec['continuous_cols'] 里声明的真实列名不一致 ——
+    # 下面按 continuous_cols 装配输入时会直接 KeyError，四个 /predict_* 全挂。
+    # 取法优先级：
+    #   1) feature_spec 显式记录的 ar_col（新产物会带）
+    #   2) continuous_cols 扣掉 continuous_base 后剩下的那一列（旧产物也能反推）
+    # 两种都拿不到就明确报错，不做兜底猜测 —— 猜错会变成「形状对、语义错」的
+    # 静默错误，比直接失败更难查。
+    tcol = spec['target_raw_col']
     if spec.get('ar_feature') == 'target_log':
-        tcol = spec['target_raw_col']
-        d['_ar_log'] = np.log1p(d[tcol].astype(float))
-    else:
-        tcol = spec['target_raw_col']
+        ar_col = spec.get('ar_col')
+        if not ar_col:
+            _base = set(spec.get('continuous_base') or [])
+            _extra = [c for c in spec['continuous_cols'] if c not in _base]
+            if len(_extra) != 1:
+                raise PredictInputError(
+                    f'无法从 continuous_cols 反推目标滞后列名（差集 {_extra}），'
+                    f'请检查 feature_spec 是否自洽')
+            ar_col = _extra[0]
+        d[ar_col] = np.log1p(d[tcol].astype(float))
 
     cat_cols = spec['categorical_cols']
     vocab = bundle['vocab_sizes']
@@ -437,10 +458,22 @@ def run_predict(trade_type, target):
     # residual 头：网络输出是「相对窗口末期的增量」（标准化 log 空间），
     # 必须加回窗口末期的标准化值才是目标预测。加回用同一个 scaler_y，
     # 与训练侧 `y_pred + prev_test` 严格同口径。
+    #
+    # correction_scale（α）是训练侧在【验证集】上标定出的修正量系数：
+    #   pred = 窗口末期值 + α x 网络输出
+    # α = <net_out, Δy> / <net_out, net_out>，三种取值都有明确含义：
+    #   α = 0  → 网络输出与真实增量无关，严格退化为 carry-forward（最强朴素基线）
+    #   α = 1  → 网络原始输出
+    #   α > 1  → 网络输出是真实增量的收缩版，按最小二乘最优幅度放大回目标
+    # 注意这里必须用 `is None` 判断而不是 `or`：α=0 是合法取值，
+    # `spec.get('correction_scale') or 1.0` 会把 0 误判成缺省而放大成 1。
+    # 旧产物没有该字段，此时 α 取 1，与改动前行为完全一致。
     if spec.get('head') == 'residual':
+        _alpha = spec.get('correction_scale')
+        _alpha = 1.0 if _alpha is None else float(_alpha)
         base_scaled = bundle['scaler_y'].transform(
             np.array([[np.log1p(last_raw)]], dtype=np.float64))
-        output = output + torch.tensor(base_scaled, dtype=output.dtype)
+        output = _alpha * output + torch.tensor(base_scaled, dtype=output.dtype)
 
     # 目标在训练期是 log1p 后再标准化，故反变换顺序为 inverse_transform -> expm1
     pred_unscaled = bundle['scaler_y'].inverse_transform(output.numpy())
