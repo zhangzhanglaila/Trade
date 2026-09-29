@@ -75,7 +75,12 @@
 
       <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
         <div class="bubble">
-          <div class="bubble-text">{{ m.text }}</div>
+          <!--
+            模型返回的是 Markdown 原文。此前直接 {{ }} 输出，页面上的
+            `**加粗**`、`- 列表` 会原样露出来，既不美观也削弱可读性。
+            这里统一走 renderMd()：markdown-it 解析 + DOMPurify 清洗。
+          -->
+          <div class="bubble-text md-body" v-html="renderMd(m.text)"></div>
 
           <div v-if="m.role === 'assistant' && m.data" class="bubble-extra">
             <a-divider style="margin: 8px 0" />
@@ -150,6 +155,19 @@
           </div>
         </div>
       </div>
+
+      <!--
+        等待作答的占位气泡。
+        后端 /ai/chat 是**单次 POST、非流式**，一次 RAG 问答端到端要 1~2 秒，
+        预测类还可能更久。此前这段时间界面上毫无变化，用户会以为没点动。
+      -->
+      <div v-if="sending" class="msg assistant">
+        <div class="bubble bubble-thinking">
+          <a-spin size="small" />
+          <span class="thinking-text">正在深度思考</span>
+          <span class="thinking-dots"><i></i><i></i><i></i></span>
+        </div>
+      </div>
     </div>
 
     <div class="qa-input">
@@ -172,7 +190,67 @@
 import { ref, reactive, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
+import MarkdownIt from 'markdown-it'
+import DOMPurifyDefault from 'dompurify'
 import { chat } from '@/api/ai'
+
+// ---------------------------------------------------------------------------
+// Markdown 渲染
+//
+// 模型（DeepSeek）返回的 answer 是 Markdown 原文，直接插进模板只会显示成
+// 一堆 `**` 和 `-`。这里用 markdown-it 解析，再用 DOMPurify 洗一遍。
+//
+// 两道防护缺一不可：
+//   1. markdown-it 关掉 html 选项 —— 模型输出里的原始 HTML 标签一律当**文本**，
+//      这从源头消灭了绝大部分注入面（模型是可控性很弱的输入源）；
+//   2. DOMPurify 兜底 —— 即便 1 被绕过（未来改配置、链接协议等），仍会过滤。
+// ---------------------------------------------------------------------------
+const md = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true,
+  typographer: false
+})
+
+// 外链一律新窗口打开，并附 rel 防止 window.opener 被反向控制
+const defaultLinkOpen =
+  md.renderer.rules.link_open ||
+  ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('target', '_blank')
+  tokens[idx].attrSet('rel', 'noopener noreferrer')
+  return defaultLinkOpen(tokens, idx, options, env, self)
+}
+
+/**
+ * dompurify 3.x 的 ESM 默认导出**已经是可直接使用的实例**
+ * （内部 `createDOMPurify()` 时用全局 window 构造，浏览器下开箱即用）。
+ * 这里做一次形状探测：若拿到的不是实例而是工厂，就自己传 window 构造 ——
+ * 免得将来升级到「必须自己传 window」的版本时，静态引用不报错却运行期静默失效。
+ */
+const DOMPurify =
+  typeof DOMPurifyDefault?.sanitize === 'function' ? DOMPurifyDefault : DOMPurifyDefault(window)
+
+function escapeHtml(s) {
+  return String(s).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+  )
+}
+
+/**
+ * 把 Markdown 原文渲染成可直接 v-html 的 HTML。
+ * 解析或清洗环节一旦抛错，退化成转义后的纯文本 —— 宁可少渲染，不可白屏。
+ */
+function renderMd(text) {
+  const raw = String(text ?? '')
+  if (!raw) return ''
+  try {
+    return DOMPurify.sanitize(md.render(raw))
+  } catch (e) {
+    return escapeHtml(raw)
+  }
+}
 
 const collapseActive = ref([])
 
@@ -378,12 +456,13 @@ function buildPayload(text) {
 
 async function send() {
   const text = inputText.value.trim()
-  if (!text) return
+  if (!text || sending.value) return
 
   pushUser(text)
   inputText.value = ''
 
   sending.value = true
+  scrollToBottom()
   try {
     const data = await chat(buildPayload(text))
     pushAssistant(data?.answer || '（无回答）', data)
@@ -393,6 +472,7 @@ async function send() {
     pushAssistant(`调用失败：${msg}`)
   } finally {
     sending.value = false
+    scrollToBottom()
   }
 }
 
@@ -493,6 +573,162 @@ function clearAdvanced() {
   line-height: 1.6;
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+/* ---------------- Markdown 正文排版 ----------------
+   气泡里的 HTML 来自 v-html，是子孙节点，scoped 样式必须用 :deep() 穿透，
+   否则一条规则都命中不了（这是 v-html + scoped 最常见的坑）。 */
+.md-body {
+  white-space: normal; /* 交给 markdown 的段落/换行规则，避免和 pre-wrap 打架 */
+}
+
+.md-body :deep(:first-child) {
+  margin-top: 0;
+}
+
+.md-body :deep(:last-child) {
+  margin-bottom: 0;
+}
+
+.md-body :deep(h1),
+.md-body :deep(h2),
+.md-body :deep(h3),
+.md-body :deep(h4),
+.md-body :deep(h5),
+.md-body :deep(h6) {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.md-body :deep(h1) { font-size: 17px; }
+.md-body :deep(h2) { font-size: 16px; }
+.md-body :deep(h3) { font-size: 15px; }
+.md-body :deep(h4),
+.md-body :deep(h5),
+.md-body :deep(h6) { font-size: 14px; }
+
+.md-body :deep(p) {
+  margin: 0 0 8px;
+}
+
+.md-body :deep(ul),
+.md-body :deep(ol) {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.md-body :deep(li) {
+  margin: 2px 0;
+}
+
+.md-body :deep(li > p) {
+  margin: 0;
+}
+
+.md-body :deep(strong) {
+  font-weight: 600;
+}
+
+.md-body :deep(em) {
+  font-style: italic;
+}
+
+.md-body :deep(code) {
+  background: #f5f5f5;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.md-body :deep(pre) {
+  margin: 0 0 8px;
+  padding: 10px;
+  border-radius: 6px;
+  overflow: auto;
+  background: #0b1020;
+  color: #d6deeb;
+}
+
+.md-body :deep(pre code) {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.md-body :deep(blockquote) {
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  border-left: 3px solid #d9d9d9;
+  background: #fafafa;
+  color: #595959;
+}
+
+.md-body :deep(table) {
+  width: 100%;
+  margin: 0 0 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.md-body :deep(th),
+.md-body :deep(td) {
+  border: 1px solid #e8e8e8;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.md-body :deep(th) {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.md-body :deep(hr) {
+  margin: 10px 0;
+  border: none;
+  border-top: 1px solid #f0f0f0;
+}
+
+.md-body :deep(a) {
+  color: #1890ff;
+}
+
+.md-body :deep(img) {
+  max-width: 100%;
+}
+
+/* ---------------- 等待作答气泡 ---------------- */
+.bubble-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8c8c8c;
+}
+
+.thinking-text {
+  font-size: 14px;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.thinking-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #bfbfbf;
+  animation: thinkBlink 1.2s infinite ease-in-out;
+}
+
+.thinking-dots i:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots i:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes thinkBlink {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
 }
 
 .bubble-extra {
