@@ -90,15 +90,27 @@
             </div>
 
             <!-- 历史数据查询（DATA_QUERY）：展示按月明细 -->
-            <div v-if="m.data.route === 'DATA_QUERY' && (m.data.dataQuery?.rows || []).length">
+            <div v-if="m.data.route === 'DATA_QUERY' && ((m.data.dataQuery?.rows || []).length || (m.data.dataQuery?.topProducts || []).length)">
               <div class="section-title">历史数据（按月倒序）</div>
               <a-table
+                v-if="(m.data.dataQuery?.rows || []).length"
                 :columns="colsFor(m)"
                 :data-source="m.data.dataQuery.rows"
                 :pagination="false"
                 size="small"
                 :row-key="(r) => (r.direction ? `${r.ym}-${r.direction}` : r.ym)"
               />
+              <!-- 未指定商品时的全商品汇总：补充金额 TOP 商品构成，让用户知道数据由哪些商品撑起来 -->
+              <template v-if="(m.data.dataQuery?.topProducts || []).length">
+                <div class="section-title" style="margin-top: 12px">主要商品构成（按金额）</div>
+                <a-table
+                  :columns="topColsFor(m)"
+                  :data-source="m.data.dataQuery.topProducts"
+                  :pagination="false"
+                  size="small"
+                  :row-key="(t) => (t.direction ? `${t.productName}-${t.direction}` : t.productName)"
+                />
+              </template>
             </div>
 
             <!-- RAG 来源 -->
@@ -328,6 +340,21 @@ function colsFor(m) {
     return [{ title: '方向', dataIndex: 'direction', width: 70 }, ...dataColumns]
   }
   return dataColumns
+}
+
+const topProductColumns = [
+  { title: '商品名称', dataIndex: 'productName' },
+  { title: '金额(人民币)', dataIndex: 'rmb', width: 190, customRender: ({ text }) => fmtNum(text) },
+  { title: '占比', dataIndex: 'share', width: 90, customRender: ({ text }) => (text == null ? '-' : (text * 100).toFixed(1) + '%') }
+]
+
+/** 主要商品构成表列：双向合并结果时每项带 direction，首列插入「方向」列 */
+function topColsFor(m) {
+  const tops = m?.data?.dataQuery?.topProducts || []
+  if (tops.some((t) => t.direction)) {
+    return [{ title: '方向', dataIndex: 'direction', width: 70 }, ...topProductColumns]
+  }
+  return topProductColumns
 }
 
 const ROUTE_LABELS = {

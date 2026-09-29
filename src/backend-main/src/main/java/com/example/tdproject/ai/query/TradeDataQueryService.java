@@ -220,6 +220,27 @@ public class TradeDataQueryService {
             if (r.getRmb() != null) totalRmb += r.getRmb();
         }
 
+        // ---- 未指定商品时的主要商品构成（金额 TOP 8）----
+        // 全商品汇总只有一笔总额，用户看不出数据由哪些商品撑起来的。
+        // 指定商品（精确名或品类聚合）时不统计——结果本身就是该商品的。
+        List<DataQueryResult.TopProduct> tops = null;
+        String topNote = "";
+        if (pResolved == null && pPattern == null) {
+            tops = topProductsByRmb(table, where, args, totalRmb);
+            if (!tops.isEmpty()) {
+                DataQueryResult.TopProduct first = tops.get(0);
+                topNote = "\n· 主要商品构成（金额 TOP " + tops.size() + "，明细见下表）："
+                        + first.getProductName() + " 居首，占 "
+                        + (first.getShare() == null ? "-" :
+                           String.format("%.1f%%", first.getShare() * 100))
+                        + "。指定商品名称可查看其逐月数量与单价。";
+            }
+        }
+
+        String summary = buildSummary(tt, target, partner, pInput, pDisplay, tradeMode, register,
+                year, month, rows.size(), latest, totalQty, totalRmb, range,
+                mixedUnit, unitSamples) + topNote;
+
         return DataQueryResult.builder()
                 .tradeType(tt).target(target).partnerName(blankToNull(partner))
                 .productName(pDisplay).productInput(pInput)
@@ -227,11 +248,39 @@ public class TradeDataQueryService {
                 .dataRange(range).hitMonths(rows.size()).rows(rows)
                 .mixedUnit(mixedUnit)
                 .unitSamples(unitSamples)
-                .summary(buildSummary(tt, target, partner, pInput, pDisplay, tradeMode, register,
-                        year, month, rows.size(), latest, totalQty, totalRmb, range,
-                        mixedUnit, unitSamples))
+                .topProducts(tops)
+                .summary(summary)
                 .suggestions(List.of())
                 .build();
+    }
+
+    /**
+     * 按金额统计期间主要商品构成（TOP 8，含占比）。
+     * 复用主查询的 where/args（伙伴、贸易方式、注册地、年月过滤一致），
+     * 把分组维度从「数据年月」换成「商品名称」。
+     */
+    private List<DataQueryResult.TopProduct> topProductsByRmb(String table,
+                                                              StringBuilder where,
+                                                              List<Object> args,
+                                                              double totalRmb) {
+        try {
+            String sql = "SELECT 商品名称, SUM(人民币) AS rmb FROM " + table
+                    + " WHERE 1=1" + where
+                    + " GROUP BY 商品名称 ORDER BY SUM(人民币) DESC LIMIT 8";
+            List<DataQueryResult.TopProduct> out = new ArrayList<>();
+            jdbc.query(sql, rs -> {
+                Double rmb = toDouble(rs.getObject("rmb"));
+                out.add(DataQueryResult.TopProduct.builder()
+                        .productName(rs.getString("商品名称"))
+                        .rmb(rmb)
+                        .share(totalRmb > 0 ? rmb / totalRmb : null)
+                        .build());
+            }, args.toArray());
+            return out;
+        } catch (Exception e) {
+            log.warn("商品构成统计失败: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     // =================================================================
@@ -272,6 +321,7 @@ public class TradeDataQueryService {
                     .dataRange(ok.getDataRange()).hitMonths(ok.getHitMonths())
                     .rows(tagDirection(ok.getRows(), inBad ? "出口" : "进口"))
                     .mixedUnit(ok.getMixedUnit()).unitSamples(ok.getUnitSamples())
+                    .topProducts(ok.getTopProducts())
                     .summary("（问题未指明进出口方向；" + badCn + "口径未能解析到该商品名，"
                             + "以下为" + (inBad ? "出口" : "进口") + "口径结果。）\n\n"
                             + ok.getSummary())
@@ -303,6 +353,7 @@ public class TradeDataQueryService {
                     .dataRange(ok.getDataRange()).hitMonths(ok.getHitMonths())
                     .rows(tagDirection(ok.getRows(), inEmpty ? "出口" : "进口"))
                     .mixedUnit(ok.getMixedUnit()).unitSamples(ok.getUnitSamples())
+                    .topProducts(ok.getTopProducts())
                     .summary("（问题未指明进出口方向；" + emptyCn
                             + "口径下无符合条件的数据，以下为"
                             + (inEmpty ? "出口" : "进口") + "结果。）\n\n" + ok.getSummary())
@@ -328,6 +379,29 @@ public class TradeDataQueryService {
                 if (!units.contains(u)) units.add(u);
             }
         }
+        // 双向合并时的主要商品构成：两侧各取 TOP 4、标注方向，按金额重排
+        List<DataQueryResult.TopProduct> mergedTops = new ArrayList<>();
+        if (in.getTopProducts() != null) {
+            int n = 0;
+            for (DataQueryResult.TopProduct t : in.getTopProducts()) {
+                if (n++ >= 4) break;
+                mergedTops.add(DataQueryResult.TopProduct.builder()
+                        .productName(t.getProductName()).rmb(t.getRmb())
+                        .share(t.getShare()).direction("进口").build());
+            }
+        }
+        if (out.getTopProducts() != null) {
+            int n = 0;
+            for (DataQueryResult.TopProduct t : out.getTopProducts()) {
+                if (n++ >= 4) break;
+                mergedTops.add(DataQueryResult.TopProduct.builder()
+                        .productName(t.getProductName()).rmb(t.getRmb())
+                        .share(t.getShare()).direction("出口").build());
+            }
+        }
+        mergedTops.sort((a, b) -> Double.compare(
+                b.getRmb() == null ? 0 : b.getRmb(),
+                a.getRmb() == null ? 0 : a.getRmb()));
         return DataQueryResult.builder()
                 .tradeType("both").target(in.getTarget())
                 .partnerName(in.getPartnerName())
@@ -340,6 +414,7 @@ public class TradeDataQueryService {
                 .mixedUnit(Boolean.TRUE.equals(in.getMixedUnit())
                         || Boolean.TRUE.equals(out.getMixedUnit()))
                 .unitSamples(units)
+                .topProducts(mergedTops.isEmpty() ? null : mergedTops)
                 .summary("（问题未指明进出口方向，以下同时给出**进口**与**出口**两部分结果。）\n\n"
                         + "【进口】" + in.getSummary() + "\n\n【出口】" + out.getSummary())
                 .suggestions(List.of())

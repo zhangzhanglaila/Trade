@@ -57,6 +57,26 @@ public class DataQueryResult {
     /** 涉及的计量单位样例 */
     private List<String> unitSamples;
 
+    /**
+     * 主要商品构成（按金额 TOP，未指定商品名时的全商品汇总场景使用）。
+     *
+     * <p>不指定商品时结果只有全商品合计金额，用户看不出数据由哪些商品构成——
+     * 这里按金额取 TOP 8 并算占比，前端渲染成第二张表；指定商品（含品类聚合）时为 null。</p>
+     */
+    private List<TopProduct> topProducts;
+
+    @Data
+    @Builder
+    public static class TopProduct {
+        private String productName;
+        /** 期间金额合计（人民币） */
+        private Double rmb;
+        /** 占同期总金额比例（0~1） */
+        private Double share;
+        /** 双向合并结果中的方向标注（「进口」/「出口」），单方向查询为 null */
+        private String direction;
+    }
+
     @Data
     @Builder
     public static class DataRow {
