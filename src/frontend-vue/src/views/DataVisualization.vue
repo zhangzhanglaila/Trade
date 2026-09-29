@@ -974,7 +974,20 @@ const loadOntologyList = async () => {
         id: item.id,
         name: item.projectName
       }))
-      // 不再自动选中第一个本体，让用户手动选择
+
+      // 进入页面直接出图：默认打开「中哈」本体，用户不必先点一下下拉框。
+      //
+      // 选择优先级：名称含「中哈」→ 列表只有 1 条时取该条 → 否则不自动选。
+      // 最后一条是刻意的：库里若将来有多个本体，替用户猜一个更可能猜错，
+      // 不如保持空状态提示「请选择本体」，避免看错数据还以为页面坏了。
+      const preferred =
+        ontologyList.value.find(item => (item.name || '').includes('中哈')) ||
+        (ontologyList.value.length === 1 ? ontologyList.value[0] : null)
+      if (preferred) {
+        selectedOntology.value = preferred.id
+        // silent：进页面不弹「已加载 N 个节点」，但「暂无数据」/报错照常提示
+        await loadOntologyGraph(preferred.id, { silent: true })
+      }
     }
   } catch (error) {
     console.error('加载本体列表失败:', error)
@@ -997,15 +1010,21 @@ const clearGraph = () => {
   }
 }
 
-const handleOntologyChange = async () => {
-  if (!selectedOntology.value) {
-    message.warning('请先选择本体')
-    return
-  }
-  
+/**
+ * 拉取指定本体的图谱数据并渲染。
+ *
+ * 从 handleOntologyChange 里抽出来，让「进入页面自动打开默认本体」与
+ * 「用户手动切换本体」共用同一段逻辑。两者唯一的差别是 silent：
+ * 进页面时静默加载，不弹「已加载 N 个节点」的提示（每次进图谱页都弹一次
+ * 属于噪声）；用户主动切换时照常提示。「暂无数据」与报错的提示则一律保留，
+ * 因为它们是用户必须知道的状态。
+ */
+const loadOntologyGraph = async (ontologyId, { silent = false } = {}) => {
+  if (!ontologyId) return
+
   try {
     loading.value = true
-    const result = await getOntologyVisualization(selectedOntology.value)
+    const result = await getOntologyVisualization(ontologyId)
     
     console.log('API返回结果:', result)
     console.log('result.data:', result.data)
@@ -1048,7 +1067,9 @@ const handleOntologyChange = async () => {
       graphData.links = links
       graphData.edges = links // 兼容两种命名
       renderChart()
-      message.success(`已加载 ${nodes.length} 个节点, ${links.length} 条关系`)
+      if (!silent) {
+        message.success(`已加载 ${nodes.length} 个节点, ${links.length} 条关系`)
+      }
     } else {
       // 【已移除假数据兜底】原先这里会调 generateMockData() 画一张编造的图谱
       // （产品/供应商/订单、iPhone 15、富士康、订单2024001、张三…），
@@ -1067,6 +1088,22 @@ const handleOntologyChange = async () => {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 用户在下拉框里手动切换本体。
+ *
+ * 注意签名：模板写的是 `@change="handleOntologyChange"`，ant-design-vue 会把
+ * 选中值作为第一个实参传进来。因此这里**不能**声明 `(silent = false)` 之类的
+ * 形参 —— 那会被选中值（数字）覆盖成真值，导致切换本体时静默不提示。
+ * 静默开关只在内部调用 loadOntologyGraph 时显式传入。
+ */
+const handleOntologyChange = async () => {
+  if (!selectedOntology.value) {
+    message.warning('请先选择本体')
+    return
+  }
+  await loadOntologyGraph(selectedOntology.value)
 }
 
 // 节点点击
