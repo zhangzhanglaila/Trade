@@ -82,6 +82,7 @@ _LEGACY_SPEC = {
     'continuous_cols': ['year', 'month', '数量', '人民币'],
     'target_raw_col': '单价',
     'ar_feature': 'none',
+    'head': 'direct',      # 旧产物是直接回归目标值，没有残差旁路
 }
 
 # 每 12 个月取一次，保证「最近 seq_length 个不同月份」都有机会被取到。
@@ -380,8 +381,9 @@ def encode_categorical(encoders, col, value, vocab_size):
 
 
 def build_inputs(df, bundle):
-    """由历史行构造模型输入张量。返回 (cat_tensor, cont_tensor, warning)。
+    """由历史行构造模型输入张量。返回 (cat_tensor, cont_tensor, warning, last_raw)。
 
+    last_raw 是窗口末期（最近一期）的原始目标值，供 residual 头加回基线用。
     列顺序严格按 feature_spec['continuous_cols'] 组装 —— 这正是把口径落盘成
     产物的意义：只要顺序与训练时一致，scaler_X.transform 才是有意义的。
     """
@@ -402,6 +404,8 @@ def build_inputs(df, bundle):
     if spec.get('ar_feature') == 'target_log':
         tcol = spec['target_raw_col']
         d['_ar_log'] = np.log1p(d[tcol].astype(float))
+    else:
+        tcol = spec['target_raw_col']
 
     cat_cols = spec['categorical_cols']
     vocab = bundle['vocab_sizes']
@@ -415,7 +419,8 @@ def build_inputs(df, bundle):
                               dtype=torch.long).unsqueeze(0)
     cont_tensor = torch.tensor(np.asarray(cont, dtype=np.float32),
                                dtype=torch.float32).unsqueeze(0)
-    return cat_tensor, cont_tensor, warning
+    last_raw = float(d[tcol].astype(float).iloc[-1])
+    return cat_tensor, cont_tensor, warning, last_raw
 
 
 def run_predict(trade_type, target):
@@ -424,10 +429,18 @@ def run_predict(trade_type, target):
     spec = bundle['spec']
 
     df = fetch_history(trade_type, spec)
-    cat_tensor, cont_tensor, warning = build_inputs(df, bundle)
+    cat_tensor, cont_tensor, warning, last_raw = build_inputs(df, bundle)
 
     with torch.no_grad():
         output = bundle['model'](cat_tensor, cont_tensor)
+
+    # residual 头：网络输出是「相对窗口末期的增量」（标准化 log 空间），
+    # 必须加回窗口末期的标准化值才是目标预测。加回用同一个 scaler_y，
+    # 与训练侧 `y_pred + prev_test` 严格同口径。
+    if spec.get('head') == 'residual':
+        base_scaled = bundle['scaler_y'].transform(
+            np.array([[np.log1p(last_raw)]], dtype=np.float64))
+        output = output + torch.tensor(base_scaled, dtype=output.dtype)
 
     # 目标在训练期是 log1p 后再标准化，故反变换顺序为 inverse_transform -> expm1
     pred_unscaled = bundle['scaler_y'].inverse_transform(output.numpy())

@@ -46,6 +46,33 @@ parser.add_argument('--group_key', type=str, default='full',
 parser.add_argument('--test_ratio', type=float, default=0.2, help='测试集比例（默认 0.2）')
 parser.add_argument('--epochs', type=int, default=1000, help='最大训练轮数（默认沿用脚本原值）')
 parser.add_argument('--max_rows', type=int, default=0, help='冒烟测试：只用约 N 行（0=全量）')
+parser.add_argument('--sample_mode', type=str, default='commodity',
+                    choices=['commodity', 'cap', 'active'],
+                    help='抽样方式：'
+                         'commodity（历史行为）=随机挑整个商品，累计达 --max_rows 即停。'
+                         '出口实测只留 446/6,974 个商品（覆盖 6.4%%），推理端其余'
+                         '93.6%% 的商品全部退化成兜底 embedding，预测失去信息量。'
+                         'cap=保留全部商品编码，每个商品只取最近 --cap_k 个「不同月份」。'
+                         'active=只保留最近 --active_months 个月内有过交易的商品，'
+                         '并保留这些商品的完整历史（不截断时间线）。')
+parser.add_argument('--cap_k', type=int, default=0,
+                    help='cap 抽样下每个商品保留的最近「不同月份」数'
+                         '（0 = 由 --max_rows 自适应）')
+parser.add_argument('--patience', type=int, default=8,
+                    help='早停耐心（默认 8）。原实现硬编码 100，在 30 轮的 A/B 里'
+                         '其最佳验证损失出现在第 13~14 轮，后 16 轮全属过拟合，'
+                         '既浪费时间又让「最后 epoch 权重」劣于最佳 checkpoint。')
+parser.add_argument('--val_ratio', type=float, default=0.1,
+                    help='从训练序列的「时间尾部」切出多少比例作为独立验证集'
+                         '（默认 0.1；0 = 关闭，此时会退回用测试集做验证并给出警告）。'
+                         '原实现直接用 test_loader 当验证集，'
+                         '导致最佳 checkpoint 与学习率调度都在测试集上做选择。')
+parser.add_argument('--active_months', type=int, default=24,
+                    help='active 抽样下的活跃窗口（月，默认 24）')
+parser.add_argument('--cutoff_ym', type=int, default=0,
+                    help='time 协议下的固定日历切分点（YYYYMM 整数，如 202412）。'
+                         '0（默认）=按 数据年月 的 80%% 分位自动取。'
+                         'cap 抽样必须配固定点，理由见切分处注释。')
 parser.add_argument('--seed', type=int, default=42, help='随机种子（切分与抽样用）')
 parser.add_argument('--ar_feature', type=str, default='target_log',
                     choices=['none', 'target_log'],
@@ -55,6 +82,19 @@ parser.add_argument('--ar_feature', type=str, default='target_log',
                          '目标序列强自相关（实测 lag-1 自相关 0.87~0.93），'
                          '而原特征集里完全没有目标自身的历史值，模型无法表达'
                          '「预测≈上一期值」，必然打不过 carry-forward 基线。')
+parser.add_argument('--head', type=str, default='residual',
+                    choices=['direct', 'residual'],
+                    help='输出头：'
+                         'direct（历史行为）=直接回归目标值本身；'
+                         'residual（默认）=回归「相对窗口末期的增量」，'
+                         '即 pred = 窗口末期值 + 模型输出。'
+                         '动机：目标序列强自相关，carry-forward 基线 log 空间 R2 '
+                         '高达 0.93~0.95，direct 头必须从零学会「原样输出上一期」'
+                         '才能追平基线，实测 A/B 两条臂（ar_feature none/target_log）'
+                         'log 空间 R2 分别 0.7760 / 0.9040，均未超过 0.9467。'
+                         'residual 头把「原样输出上一期」做成网络的恒等旁路：'
+                         '输出全零即恒等于 carry-forward，模型只需学习修正量，'
+                         '结构上不可能劣于该基线（这是本参数存在的全部意义）。')
 parser.add_argument('--threads', type=int, default=4,
                     help='PyTorch 的 CPU 线程数（默认 4）')
 parser.add_argument('--batch_size', type=int, default=32,
@@ -269,21 +309,62 @@ else:
 seq_length = 2          # 历史窗口长度，必须与 app.py 的 seq_length 保持一致
 SPLIT_RATIO = args.test_ratio
 
-# 冒烟测试用：按「商品」整组抽样，保证每个被选中商品的完整时间线都在，
-# 否则整组截断会人为制造出「序列不完整」的假象
-if args.max_rows and len(df) > args.max_rows:
-    _codes = df['商品编码'].astype(str)
-    _sizes = _codes.value_counts()
-    _order = _sizes.index.to_numpy().copy()
-    np.random.RandomState(args.seed).shuffle(_order)
-    _keep, _cum = [], 0
-    for _c in _order:
-        _keep.append(_c)
-        _cum += int(_sizes[_c])
-        if _cum >= args.max_rows:
-            break
-    df = df[_codes.isin(set(_keep))].reset_index(drop=True)
-    print(f"冒烟抽样：保留 {len(_keep)} 个商品 / {len(df)} 行（目标约 {args.max_rows} 行）")
+# 抽样：三种口径，见 --sample_mode 的说明。
+#   commodity —— 历史行为。随机挑整个商品，累计行数达上限即停。
+#     出口实测只留 446/6,974 个商品（6.4%），推理端 93.6% 的商品退化成
+#     兜底 embedding，等于该商品的预测失去信息量。
+#   cap —— 保留全部商品编码，每个商品只取最近 K 个「不同月份」。
+#     注意必须按月份而不是行数截取：同一商品同一月有多条四键记录，
+#     按行数截 24 行可能只覆盖 1~2 个月，序列全部挤到最近，训练集被压到
+#     万级以下、划分严重失衡（实测训练只剩 8,980 条 / 测试占 66%）。
+#   active —— 保留「最近 N 个月内有过交易」的商品的全部历史。
+#     时点上更贴合生产：问答/看板问的必然是当前在做的商品，
+#     而远古商品的嵌入即便训练过也用不上；同时保留完整时间线，
+#     使 time 协议的切分点自然落得下。
+# active 与 cap（显式给了 --cap_k）都不依赖 --max_rows 触发；
+# commodity 是「按行数上限挑整组商品」，所以必须有 --max_rows 才有意义。
+_need_sample = (args.sample_mode == 'active'
+                or (args.sample_mode == 'cap' and bool(args.cap_k))
+                or (bool(args.max_rows) and len(df) > args.max_rows))
+if _need_sample:
+    if args.sample_mode == 'active':
+        _n = args.active_months or 24
+        _ym = df['year'].astype(int) * 100 + df['month'].astype(int)
+        _mx = int(_ym.max())
+        _t = (_mx // 100) * 12 + (_mx % 100 - 1) - (_n - 1)
+        _cut = (_t // 12) * 100 + (_t % 12) + 1
+        _active = set(df.loc[_ym >= _cut, '商品编码'].astype(str).unique())
+        _before = df['商品编码'].nunique()
+        df = df[df['商品编码'].astype(str).isin(_active)].reset_index(drop=True)
+        print(f"抽样(active)：最近 {_n} 个月（>= {_cut}）内有交易的商品 "
+              f"{len(_active):,} / {_before:,}"
+              f"（{len(_active)/max(_before,1)*100:.1f}%），保留其完整历史 → "
+              f"{len(df):,} 行")
+    elif args.sample_mode == 'cap':
+        _n_codes = df['商品编码'].nunique()
+        _k = args.cap_k or max(2, int(args.max_rows / max(_n_codes, 1)))
+        _s = df.assign(_ym=df['year'].astype(int) * 100 + df['month'].astype(int))
+        _g = _s.groupby('商品编码', sort=False)['_ym']
+        _rk = _g.rank(method='dense')
+        _nm = _g.transform('nunique')
+        df = _s[_rk > _nm - _k].drop(columns='_ym').reset_index(drop=True)
+        print(f"抽样(cap)：保留全部 {_n_codes} 个商品，每商品最近 {_k} 个不同月份"
+              f" → {len(df):,} 行（目标约 {args.max_rows} 行）")
+    else:
+        _codes = df['商品编码'].astype(str)
+        _sizes = _codes.value_counts()
+        _order = _sizes.index.to_numpy().copy()
+        np.random.RandomState(args.seed).shuffle(_order)
+        _keep, _cum = [], 0
+        for _c in _order:
+            _keep.append(_c)
+            _cum += int(_sizes[_c])
+            if _cum >= args.max_rows:
+                break
+        df = df[_codes.isin(set(_keep))].reset_index(drop=True)
+        print(f"抽样(commodity)：保留 {len(_keep)} 个商品 / {len(df)} 行"
+              f"（目标约 {args.max_rows} 行，商品覆盖率 "
+              f"{len(_keep)/max(_codes.nunique(),1)*100:.1f}%）")
 
 # 清理连续变量中的异常值，并丢弃含 NaN 的行。
 # 必须放在切分之前，否则切分点会落在脏数据上。
@@ -326,18 +407,28 @@ else:
     # 历史行为：仅商品编码。保留以便与旧结论对照。
     df['_series_key'] = df['_orig_comm']
 
-print(f"序列分组键: {args.group_key}   序列条数 {df['_series_key'].nunique():,}")
+print(f"序列分组键: {args.group_key}   四键分组数 {df['_series_key'].nunique():,}"
+      f"（此行不是训练样本数，按 seq_length={seq_length} 展开后见下方「训练/测试序列」）")
 
 # 每条序列内部按时间先后排序，保证序列的时间顺序正确
 df = df.sort_values(['_series_key', 'year', 'month']).reset_index(drop=True)
 ym_all = df['数据年月'].astype('int64')
 
 if args.split_mode == 'time':
-    # 按「数据年月」的整体分位切；序列随后按自身目标的月份归属，
-    # 因此全部测试序列在时间上都晚于训练序列。
-    cutoff = int(np.quantile(ym_all.values, 1 - SPLIT_RATIO))
+    # 切分点：默认取「数据年月」的整体 80% 分位；也可用 --cutoff_ym 固定日历点。
+    #
+    # 为什么需要固定点：cap 抽样把每个商品都截到「最近 k 期」后，全体商品的
+    # 尾部都挤在最近若干月，分位切分点会被推到很晚，导致目标月几乎全部落在
+    # 切分点之前 —— 实测 k=17/24 时测试序列数直接为 0，模型无从评测。
+    # 固定日历点（如 202412）让「测试集 = 最近一年的所有序列」，
+    # 语义清晰、与抽样方式解耦。
+    if args.cutoff_ym:
+        cutoff = int(args.cutoff_ym)
+    else:
+        cutoff = int(np.quantile(ym_all.values, 1 - SPLIT_RATIO))
     train_row_mask = (ym_all <= cutoff).to_numpy()
     test_codes = None
+    print(f"切分点来源: {'--cutoff_ym 固定日历点' if args.cutoff_ym else '数据年月 80% 分位'}")
 else:
     cutoff = None
     _codes = np.array(sorted(df['_orig_comm'].unique()))
@@ -439,8 +530,61 @@ print(f"  测试集中「训练期未见过的商品」: {int(cold_mask.sum())} 
 print(f"  测试集中「训练期未见过的四键序列」: {int(skey_cold_mask.sum())} / {len(test_idx)}"
       f" ({skey_cold_mask.mean() * 100:.1f}%)")
 
-X_cat_train, X_cont_train, y_train = X_cat[train_idx], X_cont[train_idx], y[train_idx]
+y_train = y[train_idx]        # 仅用于「上一期值/全局均值/季节均值」三条朴素养线
 X_cat_test, X_cont_test, y_test = X_cat[test_idx], X_cont[test_idx], y[test_idx]
+
+# =====================================================================
+# 从训练序列里再切出「独立验证集」（原实现把 test_loader 当验证集用）
+#
+# 原实现（第 735 行）拿 test_loader 算 val_loss，并用它做
+#   ① ReduceLROnPlateau 的学习率调度  ② EarlyStopping 的最佳 checkpoint 选择
+# 后果是「模型选择发生在测试集上」—— 报出来的测试 R² 是「在测试集上挑过
+# 最好的一轮」的结果，属于典型的选择性偏差，不能作为泛化能力证据。
+#
+# 这里按时间从训练序列尾部切出 --val_ratio 比例作为验证集：
+# 验证与测试都取自时间尾部、且验证更早，符合「用过去预测未来」的时点关系，
+# 同时两者互不重叠。测试集此后只用于最终报告，不参与任何训练期决策。
+# =====================================================================
+_val_ratio = args.val_ratio
+if _val_ratio > 0:
+    _order_train = train_idx[np.argsort(seq_ym[train_idx], kind='mergesort')]
+    _n_val = int(round(len(_order_train) * _val_ratio))
+    if _n_val < 1 or _n_val >= len(_order_train):
+        _n_val = 0
+    if _n_val > 0:
+        val_idx = _order_train[-_n_val:]
+        fit_idx = np.setdiff1d(train_idx, val_idx, assume_unique=False)
+    else:
+        val_idx = np.array([], dtype=int)
+        fit_idx = train_idx
+else:
+    val_idx = np.array([], dtype=int)
+    fit_idx = train_idx
+    print("  ! --val_ratio=0：没有独立验证集，将退回用【测试集】做验证与早停，"
+          "报出的测试 R² 会偏高、不可作为泛化能力证据。")
+print(f"  训练/验证划分: 拟合 {len(fit_idx)} / 验证 {len(val_idx)}"
+      f"（验证集取自训练序列时间尾部，test_ratio={SPLIT_RATIO}, val_ratio={_val_ratio}）")
+
+# ---- 输出头：residual 时模型拟合的是「相对窗口末期的增量」 ----
+# y_*（真值）与 prev_*（窗口末期值）都在「标准化后的 log 空间」，两者共用
+# scaler_y，故在标准化空间里直接相减得到的增量再做逆变换是合法的。
+# 注意：y_train / y_test 必须保持真值不变 —— 评估段要用它算 R²，
+# 只有喂给 DataLoader 的目标才是增量。
+prev_test = np.asarray(seq_prev_y[test_idx], dtype=np.float64).reshape(-1, 1)
+prev_fit = np.asarray(seq_prev_y[fit_idx], dtype=np.float64).reshape(-1, 1)
+prev_val = (np.asarray(seq_prev_y[val_idx], dtype=np.float64).reshape(-1, 1)
+            if len(val_idx) else np.zeros((0, 1)))
+y_fit = y[fit_idx]
+y_val = y[val_idx]
+if args.head == 'residual':
+    y_fit_loader = y_fit - prev_fit
+    y_val_loader = (y_val - prev_val) if len(val_idx) else y_val
+    print(f"输出头: residual（回归增量，预测 = 窗口末期值 + 网络输出）；"
+          f"增量训练目标 std={float(np.std(y_fit_loader)):.4f}")
+else:
+    y_fit_loader = y_fit
+    y_val_loader = y_val
+    print(f"输出头: direct（直接回归目标值）")
 
 # 朴素基线（全部在「标准化后的 log 空间」，评估段再还原到原始尺度）
 baseline_prev = seq_prev_y[test_idx]                                   # 上一期值
@@ -458,22 +602,34 @@ _grand_mean = float(y_train.mean())
 baseline_season = np.array([_month_mean.get(int(m), _grand_mean)
                             for m in _test_month])                     # 季节均值
 
-# 转换为PyTorch张量
-X_cat_train_tensor = torch.tensor(X_cat_train, dtype=torch.long)
-X_cont_train_tensor = torch.tensor(X_cont_train, dtype=torch.float32)
-y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
+# 转换为PyTorch张量（训练集只含 fit_idx，验证集独立）
+X_cat_fit_tensor = torch.tensor(X_cat[fit_idx], dtype=torch.long)
+X_cont_fit_tensor = torch.tensor(X_cont[fit_idx], dtype=torch.float32)
+y_fit_tensor = torch.tensor(y_fit_loader, dtype=torch.float32)
 
 X_cat_test_tensor = torch.tensor(X_cat_test, dtype=torch.long)
 X_cont_test_tensor = torch.tensor(X_cont_test, dtype=torch.float32)
 y_test_tensor = torch.tensor(y_test, dtype=torch.float32)
 
 # 创建DataLoader
-train_dataset = torch.utils.data.TensorDataset(X_cat_train_tensor, X_cont_train_tensor, y_train_tensor)
+train_dataset = torch.utils.data.TensorDataset(X_cat_fit_tensor, X_cont_fit_tensor, y_fit_tensor)
 # 训练集的洗牌必须用显式播种的 Generator，否则 --seed 对训练无效
 _rng = torch.Generator()
 _rng.manual_seed(args.seed)
 train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                           generator=_rng)
+
+# 验证集：独立于测试集，只用于学习率调度与最佳 checkpoint 选择
+if len(val_idx):
+    val_dataset = torch.utils.data.TensorDataset(
+        torch.tensor(X_cat[val_idx], dtype=torch.long),
+        torch.tensor(X_cont[val_idx], dtype=torch.float32),
+        torch.tensor(y_val_loader, dtype=torch.float32))
+else:
+    val_dataset = None
+val_loader = (DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=0)
+              if val_dataset is not None else None)
+
 test_dataset = torch.utils.data.TensorDataset(X_cat_test_tensor, X_cont_test_tensor, y_test_tensor)
 test_loader = DataLoader(
     test_dataset,
@@ -603,7 +759,7 @@ os.makedirs(save_path, exist_ok=True)
 
 # 构建checkpoint路径
 checkpoint_path = os.path.join(save_path, f'checkpoint_{args.target}.pth')
-early_stopping = EarlyStopping(patience=100, verbose=True, path=checkpoint_path)#patience表示耐心程度，当连续多少个epoch without improvement时，停止训练
+early_stopping = EarlyStopping(patience=args.patience, verbose=True, path=checkpoint_path)#patience表示耐心程度，当连续多少个epoch without improvement时，停止训练
 
 print("开始训练...")
 for epoch in range(epochs):
@@ -627,17 +783,20 @@ for epoch in range(epochs):
     avg_train_loss = total_loss / len(train_loader)
     losses.append(avg_train_loss)
 
-    # 验证
+    # 验证：用独立的 val_loader（原实现误用 test_loader，导致模型选择发生在
+    # 测试集上；测试集此后只用于最终报告，不参与任何训练期决策）
     model.eval()
     val_loss = 0.0
+    _val_src = val_loader if val_loader is not None else test_loader
+    _val_n = len(_val_src.dataset)
     with torch.no_grad():
-        for x_cat_val, x_cont_val, y_val in test_loader:
-            x_cat_val, x_cont_val, y_val = x_cat_val.to(device), x_cont_val.to(device), y_val.to(device)
+        for x_cat_val, x_cont_val, y_val_b in _val_src:
+            x_cat_val, x_cont_val, y_val_b = x_cat_val.to(device), x_cont_val.to(device), y_val_b.to(device)
             val_outputs = model(x_cat_val, x_cont_val)
-            loss = criterion(val_outputs, y_val)
+            loss = criterion(val_outputs, y_val_b)
             val_loss += loss.item() * x_cat_val.size(0)
 
-        val_loss /= len(test_loader.dataset)
+        val_loss /= _val_n
 
     scheduler.step(val_loss)
     val_losses.append(val_loss)
@@ -684,6 +843,13 @@ with torch.no_grad():
 # 合并所有批次的结果
 y_pred = np.concatenate(all_preds, axis=0)
 y_true = np.concatenate(all_true, axis=0)
+
+# residual 头：网络输出是增量，加回窗口末期值才是目标值的预测。
+# 这一步必须在所有下游评估之前完成，否则 R² / 基线对照全部错位。
+# 注意 test_loader 装的仍是真值 y_test（只有 train 侧换成了增量），
+# 所以这里只修正 y_pred，不动 y_true。
+if args.head == 'residual':
+    y_pred = y_pred + prev_test
 
 # 反标准化 + exp
 y_pred_unscaled = np.expm1(scaler_y.inverse_transform(y_pred))
@@ -803,8 +969,12 @@ model.eval()
 with torch.no_grad():
     for _x_cat_b, _x_cont_b, _ in _eval_loader:
         _train_preds.append(model(_x_cat_b.to(device), _x_cont_b.to(device)).cpu().numpy())
-train_o = _to_orig(np.concatenate(_train_preds, axis=0))
-train_true_o = _to_orig(y_train)
+_train_preds = np.concatenate(_train_preds, axis=0)
+# train_dataset 只含 fit_idx，且 residual 头下装的是增量，评估前要加回末期值
+if args.head == 'residual':
+    _train_preds = _train_preds + prev_fit
+train_o = _to_orig(_train_preds)
+train_true_o = _to_orig(y_fit)
 
 _r2_train = r2_score(train_true_o, train_o)
 _m_r2 = _res['模型'][0]
@@ -973,8 +1143,10 @@ feature_spec = {
     'continuous_cols': list(continuous_cols),
     'continuous_base': list(CONTINUOUS_BASE),
     'ar_feature': args.ar_feature,
+    'head': args.head,
     'group_key': args.group_key,
     'split_mode': args.split_mode,
+    'cutoff_ym': int(cutoff) if cutoff is not None else None,
 }
 with open(save_path + f'feature_spec_{args.target}.pkl', 'wb') as f:
     pickle.dump(feature_spec, f)
