@@ -242,6 +242,15 @@ public class IntentRouter {
             if (t.contains(kw)) return ROUTE_PREDICT;
         }
 
+        // ②-2 显式新闻信号 → 新闻问答。
+        //     必须早于数据查询判定：「查询新闻：阿斯塔纳12月20日电人民日报」
+        //     同时含查询动词「查询」和月份「12月」，会被 ③ 的 queryWord&&hasYm
+        //     分支劫持成历史数据查询（实测案例：路由答非所问，反问进口还是出口）；
+        //     「查一下哈萨克斯坦出口的新闻」也会被 tradeWord+queryWord 劫持。
+        //     「新闻」是强信号，出现即视为检索意图；预测句在 ② 已先行返回，
+        //     SCOPE 问句在 ①-2 已先行返回，均不受影响。
+        if (t.contains("新闻")) return ROUTE_RAG_NEWS;
+
         // ③ 已发生数据的查询信号 → 历史数据查询
         boolean tradeWord = t.contains("进口") || t.contains("出口") || t.contains("单价")
                 || t.contains("数量") || t.contains("金额") || t.contains("贸易额")
