@@ -60,7 +60,19 @@ public class AiChatController {
             if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
                 var slots = intent.getPredictSlots();
                 List<String> hints = collectPredictHints(slots);
-                if (!hints.isEmpty()) {
+                // 槽位即便齐全，商品名也可能是俗称（如「奶制品」），库里并无这个
+                // 精确名称。若不拦截，会把俗称原样传给 Flask，得到 404「组合无历史数据」，
+                // 用户只看到一句冷冰冰的报错，不知道该怎么改。这里在调预测前先核对
+                // 商品名是否精确存在于库中，不存在就转入引导、给出规范名候选。
+                boolean productUnresolved = slots != null
+                        && !isBlank(slots.getProductName())
+                        && !isBlank(slots.getTradeType())
+                        && !tradeDataQueryService.productExists(
+                                slots.getTradeType(), slots.getProductName());
+                if (!hints.isEmpty() || productUnresolved) {
+                    if (hints.isEmpty() && productUnresolved) {
+                        hints.add("商品名称");
+                    }
                     // 关键：把「缺什么」和「库里实际有什么」一起给出来。此前只给一段
                     // 固定模板，用户照着补也不知道商品名该写什么，于是反复得到同一句话。
                     return Result.build(AiChatResponse.builder()
@@ -326,20 +338,30 @@ public class AiChatController {
             }
         }
 
+        // 商品名是俗称时，示例句别再原样用「奶制品」——那正是用户要改掉的词。
+        // 用第一个规范候选顶上，用户照抄即可命中库里真实商品。
+        String exampleProduct = null;
+        if (s != null && !isBlank(s.getProductName()) && !isBlank(s.getTradeType())) {
+            List<String> top = tradeDataQueryService.suggestProducts(
+                    s.getTradeType(), s.getProductName(), 1);
+            if (!top.isEmpty()) exampleProduct = top.get(0);
+        }
+
         sb.append("\n")
                 .append("可以这样问（把缺的部分补上即可）：\n")
-                .append("「").append(exampleFor(s)).append("」\n\n")
+                .append("「").append(exampleFor(s, exampleProduct)).append("」\n\n")
                 .append("四种要素一次说清：贸易伙伴 + 商品名称 + 贸易方式 + 境内注册地，"
                         + "并点明进口/出口与单价/数量；目标月份不写默认下个月。");
         return sb.toString();
     }
 
     /** 用已识别的槽位拼一个尽量具体的示例，避免每次都是同一句模板。 */
-    private String exampleFor(PredictRequest s) {
+    private String exampleFor(PredictRequest s, String productOverride) {
         String partner = s != null && !isBlank(s.getTradePartnerName())
                 ? s.getTradePartnerName() : "哈萨克斯坦";
-        String product = s != null && !isBlank(s.getProductName())
-                ? s.getProductName() : "铜矿砂及其精矿";
+        String product = productOverride != null ? productOverride
+                : (s != null && !isBlank(s.getProductName())
+                        ? s.getProductName() : "铜矿砂及其精矿");
         String mode = s != null && !isBlank(s.getTradeMode()) ? s.getTradeMode() : "一般贸易";
         String register = s != null && !isBlank(s.getRegisterName())
                 ? s.getRegisterName() : "新疆维吾尔自治区";

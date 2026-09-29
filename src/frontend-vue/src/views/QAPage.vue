@@ -274,6 +274,12 @@ const messages = ref([])
 const inputText = ref('')
 const sending = ref(false)
 
+// 上一轮对话状态，用于识别「补全式追问」。
+// 场景：用户问「预测…」得到「还缺贸易方式/注册地」的引导，紧接着只回一个
+// 词（如「一般贸易」「新疆」）来补槽位。此前系统把这一句当成全新问题，
+// 落到新闻问答去检索，答非所问。这里把它拼回上一轮问题，交给后端重新抽槽位。
+const lastTurn = ref(null)
+
 const chatBodyRef = ref(null)
 
 const sourceColumns = [
@@ -471,10 +477,19 @@ function holdThinking(t0) {
 }
 
 async function send() {
-  const text = inputText.value.trim()
-  if (!text || sending.value) return
+  const raw = inputText.value.trim()
+  if (!raw || sending.value) return
 
-  pushUser(text)
+  // 补全式追问：上一轮是「预测缺槽位」的引导，本轮是短补充（不含新意图启动词），
+  // 就把它拼到上一轮问题后面一起重问，让后端拿到完整上下文重新抽槽位。
+  let text = raw
+  if (lastTurn.value && lastTurn.value.route === 'PREDICT' && lastTurn.value.hints?.length) {
+    if (isFollowupFill(raw)) {
+      text = `${lastTurn.value.question}，${raw}`
+    }
+  }
+
+  pushUser(raw)
   inputText.value = ''
 
   sending.value = true
@@ -484,6 +499,11 @@ async function send() {
     const data = await chat(buildPayload(text))
     await holdThinking(t0)
     pushAssistant(data?.answer || '（无回答）', data)
+    lastTurn.value = {
+      route: data?.route,
+      hints: data?.hints,
+      question: text
+    }
   } catch (e) {
     await holdThinking(t0)
     const msg = e?.message || '调用失败'
@@ -495,6 +515,21 @@ async function send() {
   }
 }
 
+/**
+ * 是否属于「补全式追问」：很短、且不带任何会另起一个新问题的意图启动词。
+ * 「一般贸易」「新疆」「出口」这类补槽位的词会命中；「一般贸易是什么」
+ * 「最近有什么新闻」这类新问题因含「是什么/新闻」等启动词而不会命中。
+ */
+function isFollowupFill(t) {
+  if (!t || t.length > 20) return false
+  const starters = [
+    '预测', '预估', '预计', '预判', '推算', '新闻', '报道', '来源',
+    '是什么', '什么是', '为什么', '多少', '是多少', '查询', '查一下',
+    '哪些', '主要', '最近', '近期', '你好', '谢谢', '介绍', '分析'
+  ]
+  return !starters.some((k) => t.includes(k))
+}
+
 function onKeydown(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -504,6 +539,7 @@ function onKeydown(e) {
 
 function clearChat() {
   messages.value = []
+  lastTurn.value = null
 }
 
 function clearAdvanced() {

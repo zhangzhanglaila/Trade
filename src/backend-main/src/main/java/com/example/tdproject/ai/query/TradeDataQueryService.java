@@ -698,10 +698,10 @@ public class TradeDataQueryService {
      * 只放「库里真实存在、且用户极可能用俗称」的少数高频品类，避免误伤。
      */
     private static final Map<String, String[]> SYNONYMS = Map.of(
-            "奶制品", new String[]{"乳", "奶油", "奶"},
-            "乳制品", new String[]{"乳", "奶油", "奶"},
-            "奶", new String[]{"乳", "奶油"},
-            "乳", new String[]{"乳", "奶油"}
+            "奶制品", new String[]{"乳及奶油", "固状乳及奶油", "乳及奶油，含脂量"},
+            "乳制品", new String[]{"乳及奶油", "固状乳及奶油", "乳及奶油，含脂量"},
+            "奶", new String[]{"乳及奶油"},
+            "乳", new String[]{"乳及奶油"}
     );
 
     private List<String> singleChars(String raw) {

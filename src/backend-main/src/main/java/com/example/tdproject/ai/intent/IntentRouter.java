@@ -104,6 +104,8 @@ public class IntentRouter {
     private static final Pattern YM_YEAR = Pattern.compile("20\\d{2}\\s*年?");
     private static final Pattern YM_MONTH = Pattern.compile("(^|[^0-9])(1[0-2]|0?[1-9])\\s*月");
     private static final Pattern YM_PACKED = Pattern.compile("20\\d{4}");
+    /** 两位年份写法，如「26年10月」「26年」→ 2026（前缀补 20）。 */
+    private static final Pattern YM_YEAR_2DIGIT = Pattern.compile("(?<![0-9])([0-9]{2})\\s*年");
 
     private final LlmClient llmClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -377,6 +379,17 @@ public class IntentRouter {
             if (m.find()) {
                 String y = m.group().replaceAll("[^0-9]", "");
                 if (y.length() == 4) year = Integer.parseInt(y);
+            }
+        }
+        // 两位年份写法（「26年」「26年10月」）→ 前缀补 20 成 2026。
+        // 用户口语里几乎不写完整四位的年份，此前只认 20\d{2} 会把「26年10月」
+        // 漏成 year=null，预测缺省补成「下个月」，引导语里的目标月份对不上。
+        if (year == null) {
+            java.util.regex.Matcher m = YM_YEAR_2DIGIT.matcher(text);
+            if (m.find()) {
+                String y = m.group(1);
+                int v = Integer.parseInt(y);
+                year = (v < 50) ? 2000 + v : 1900 + v;
             }
         }
         if (month == null) {
