@@ -39,23 +39,24 @@ public class AiChatController {
             debug.put("intent", intent);
 
             if (IntentRouter.ROUTE_PREDICT.equalsIgnoreCase(route)) {
-                // 防御：即便路由把它判成预测，槽位也可能不完整（用户只说了「预测一下」
-                // 而没给任何实体）。与其把 predict(null) 的异常抛给前端，不如返回一句
-                // 能照着补全的提示。槽位补齐本身在 IntentRouter.mergeSlots 里完成。
-                if (intent.getPredictSlots() == null) {
+                // 防御：即便路由把它判成预测，槽位也可能不完整。此前这种情况会落到
+                // predictionService 的校验里抛 IllegalArgumentException，控制器返回
+                // code=206 且 answer 为空 —— 前端渲染出一片空白，用户不知道要补什么。
+                // 实测输入「帮我预测一下」即是如此。这里改成先检查缺哪些槽位，
+                // 缺就直接给一句能照着补全的话，并且仍然带上 route=PREDICT。
+                var slots = intent.getPredictSlots();
+                String missing = missingPredictFields(slots);
+                if (missing != null) {
                     return Result.build(AiChatResponse.builder()
                             .route(IntentRouter.ROUTE_PREDICT)
-                            .answer("已识别为「贸易预测」问题，但没能从提问里取到足够的槽位。"
-                                    + "请补充：贸易伙伴（如 哈萨克斯坦）、商品名称、贸易方式"
-                                    + "（如 一般贸易）、境内注册地（如 新疆维吾尔自治区），"
-                                    + "并说明要预测进口还是出口、单价还是数量。")
+                            .answer(buildSlotGuidance(missing))
                             .predictResult(null)
                             .sources(null)
                             .debugInfo(debug)
                             .build());
                 }
 
-                var predict = predictionService.predict(intent.getPredictSlots());
+                var predict = predictionService.predict(slots);
                 String answer = buildPredictAnswer(predict);
 
                 return Result.build(AiChatResponse.builder()
@@ -107,5 +108,40 @@ public class AiChatController {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * 返回缺失的槽位名称（中文），全部齐备时返回 null。
+     *
+     * <p>为什么要在控制器里再查一遍：{@code PredictionService.validate} 只抛一句
+     * 笼统的「预测槽位不能为空」，而用户需要知道<b>具体</b>该补哪一项。
+     * 另外 year/month 在 IntentRouter 里已经缺省成下个月，正常不会缺。</p>
+     */
+    private String missingPredictFields(com.example.tdproject.ai.dto.PredictRequest s) {
+        if (s == null) {
+            return "全部预测信息";
+        }
+        java.util.List<String> miss = new java.util.ArrayList<>();
+        if (isBlank(s.getTradeType())) miss.add("进口还是出口");
+        if (isBlank(s.getTarget())) miss.add("预测单价还是数量");
+        if (isBlank(s.getTradePartnerName())) miss.add("贸易伙伴（如：哈萨克斯坦）");
+        if (isBlank(s.getProductName())) miss.add("商品名称");
+        if (isBlank(s.getTradeMode())) miss.add("贸易方式（如：一般贸易）");
+        if (isBlank(s.getRegisterName())) miss.add("境内注册地（如：新疆维吾尔自治区）");
+        if (s.getYear() == null || s.getMonth() == null) miss.add("目标年月");
+        if (miss.isEmpty()) return null;
+        return String.join("、", miss);
+    }
+
+    private String buildSlotGuidance(String missing) {
+        return "已识别为「贸易预测」问题，但还缺少：" + missing + "。\n"
+                + "可以这样问：「预测哈萨克斯坦铜矿砂及其精矿、一般贸易、到北京市的"
+                + "下个月进口单价」—— 一次把贸易伙伴、商品名称、贸易方式、境内注册地"
+                + "说清楚，并点明进口/出口与单价/数量即可。\n"
+                + "（目标月份不写默认为下个月。）";
+    }
+
+    private boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
     }
 }
