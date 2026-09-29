@@ -82,8 +82,13 @@ public class AjReportController {
      * 大屏是与主后端同机、跑在独立端口（默认 9095）的另一个服务。
      * 如果直接把配置里的 base-url（默认 http://127.0.0.1:9095）返回给前端，
      * 浏览器会去访问**自己机器**的 127.0.0.1:9095，必然打不开。
-     * 因此这里用请求里的 host（nginx 已透传 Host 头）替换掉回环地址，
-     * 换端口 9095，得到浏览器真正够得着的地址；域名/IP/localhost 都自动适配。
+     * 因此这里用请求里的 host（nginx 已透传 Host 头）替换掉回环地址；
+     * 域名/IP/localhost 都自动适配。
+     *
+     * 端口按访问来源区分（与 deploy/reverse_tunnel.sh 的映射保持一致）：
+     *  - 内网/回环访问：大屏服务与后端同机，直连 9095；
+     *  - 公网访问（如阿里云 123.56.246.31）：公网安全组未放行 9095，
+     *    大屏由反向隧道映射到阿里云 80 端口，故返回不带端口的 http://host。
      * 若运维显式把 base-url 配成了非回环地址（独立域名、反代等），则尊重配置。
      */
     private String resolveBaseUrl(HttpServletRequest request) {
@@ -97,7 +102,37 @@ public class AjReportController {
         if (host.contains(":") && !host.startsWith("[")) {
             host = "[" + host + "]";   // IPv6 字面量
         }
-        return "http://" + host + ":9095";
+        if (isPrivateOrLoopbackHost(host)) {
+            return "http://" + host + ":9095";
+        }
+        return "http://" + host;
+    }
+
+    /**
+     * 判断主机是否为回环或内网私有地址（RFC 1918）。
+     * 公网地址（如 123.56.246.31）返回 false。
+     */
+    private boolean isPrivateOrLoopbackHost(String host) {
+        String h = host;
+        if (h.startsWith("[") && h.endsWith("]")) {
+            h = h.substring(1, h.length() - 1);
+        }
+        if (h.equalsIgnoreCase("localhost") || h.startsWith("127.")
+                || h.startsWith("10.") || h.startsWith("192.168.")) {
+            return true;
+        }
+        if (h.startsWith("172.")) {
+            String[] parts = h.split("\\.");
+            if (parts.length >= 2) {
+                try {
+                    int second = Integer.parseInt(parts[1]);
+                    return second >= 16 && second <= 31;
+                } catch (NumberFormatException ignored) {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean isLoopback(String url) {
