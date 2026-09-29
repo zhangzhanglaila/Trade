@@ -68,5 +68,12 @@ public class DataQueryResult {
         private Double rmb;
         private Double price;
         private String unit;
+        /**
+         * 贸易方向（「进口」/「出口」）。
+         *
+         * <p>仅当问题未指明方向、后端把进口与出口两份结果合并返回时填充；
+         * 单方向查询的行此字段为 null，前端据此决定是否显示「方向」列。</p>
+         */
+        private String direction;
     }
 }

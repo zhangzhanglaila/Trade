@@ -55,14 +55,14 @@ public class TradeDataQueryService {
 
         String tt = normalizeTradeType(tradeType);
         if (tt == null) {
-            return DataQueryResult.builder()
-                    .tradeType(null).target(target)
-                    .summary("这是「历史数据查询」问题。请先说明是**进口**还是**出口**，"
-                            + "例如：「2025年1月哈萨克斯坦的出口数量」。")
-                    .suggestions(List.of("进口", "出口"))
-                    .hitMonths(0)
-                    .rows(List.of())
-                    .build();
+            // 2026-09-29 体验调整：问题未指明方向时不再反问「进口还是出口」——
+            // 用户第一句就想拿到数据。进口、出口各查一遍：
+            //   两边都有数据 → rows 合并（每行标 direction）、summary 分两段结论；
+            //   只有一边有   → 返回那边并在开头注明；
+            //   商品名两边都解析失败 → 返回解析引导（含相近商品候选）。
+            DataQueryResult in = query("in", target, year, month, partner, product, tradeMode, register);
+            DataQueryResult out = query("out", target, year, month, partner, product, tradeMode, register);
+            return mergeBothDirections(in, out);
         }
 
         String table = table(tt);
@@ -72,13 +72,15 @@ public class TradeDataQueryService {
         // ---- 商品名解析 ----
         String pInput = blankToNull(product);
         String pResolved = null;
+        String pPattern = null;    // 品类聚合模式（如「%乳及奶油%」）
         List<String> pSuggest = List.of();
         boolean unresolved = false;
         if (pInput != null) {
             Resolved r = resolveProduct(table, pInput);
             pResolved = r.value;
+            pPattern = r.pattern;
             pSuggest = r.candidates;
-            unresolved = r.value == null;
+            unresolved = r.value == null && r.pattern == null;
             if (unresolved) {
                 return DataQueryResult.builder()
                         .tradeType(tt).target(target)
@@ -93,6 +95,10 @@ public class TradeDataQueryService {
                         .build();
             }
         }
+        // 展示名：精确名或「关键词（品类合计）」
+        String pDisplay = pResolved != null
+                ? pResolved
+                : (pPattern != null ? pPattern.replace("%", "") + "（品类合计）" : null);
 
         // ---- 组装过滤条件 ----
         StringBuilder where = new StringBuilder();
@@ -103,6 +109,10 @@ public class TradeDataQueryService {
         if (pResolved != null) {
             where.append(" AND 商品名称 = ?");
             args.add(pResolved);
+        } else if (pPattern != null) {
+            // 品类聚合：把该关键词下所有规范商品求和（奶制品 → 乳及奶油类全部商品）
+            where.append(" AND 商品名称 LIKE ?");
+            args.add(pPattern);
         }
 
         // ---- 年月范围 ----
@@ -143,7 +153,7 @@ public class TradeDataQueryService {
         } catch (Exception e) {
             log.error("历史数据查询失败 table={} sql={}", table, sql, e);
             return DataQueryResult.builder()
-                    .tradeType(tt).target(target).productName(pResolved).productInput(pInput)
+                    .tradeType(tt).target(target).productName(pDisplay).productInput(pInput)
                     .dataRange(range).hitMonths(0).rows(List.of())
                     .summary("查询历史数据时出错：" + e.getMessage())
                     .build();
@@ -157,12 +167,12 @@ public class TradeDataQueryService {
                     : ("price".equals(target) ? "单价" : "单价或数量");
             return DataQueryResult.builder()
                     .tradeType(tt).target(target).partnerName(blankToNull(partner))
-                    .productName(pResolved).productInput(pInput)
+                    .productName(pDisplay).productInput(pInput)
                     .dataRange(range).hitMonths(0).rows(List.of())
                     .summary("**" + formatYm(ymFrom) + " 还没有实际数据**：库中最新数据是 "
                             + formatYm(maxYm) + "（覆盖 " + range + "）。\n"
                             + "如果你想了解这个月的走势，可以换成预测问题，例如：\n"
-                            + "  「预测" + blank(partner) + (pResolved != null ? pResolved : "")
+                            + "  「预测" + blank(partner) + (pDisplay != null ? pDisplay : "")
                             + "的" + when + ("in".equals(tt) ? "进口" : "出口") + what + "」")
                     .build();
         }
@@ -170,11 +180,11 @@ public class TradeDataQueryService {
         if (rows.isEmpty()) {
             return DataQueryResult.builder()
                     .tradeType(tt).target(target).partnerName(blankToNull(partner))
-                    .productName(pResolved).productInput(pInput)
+                    .productName(pDisplay).productInput(pInput)
                     .tradeMode(blankToNull(tradeMode)).registerName(blankToNull(register))
                     .dataRange(range).hitMonths(0).rows(List.of())
                     .summary("库里没有符合这组条件的记录。")
-                    .suggestions(alternativeDims(table, partner, pResolved))
+                    .suggestions(alternativeDims(table, partner, pDisplay))
                     .build();
         }
 
@@ -212,16 +222,144 @@ public class TradeDataQueryService {
 
         return DataQueryResult.builder()
                 .tradeType(tt).target(target).partnerName(blankToNull(partner))
-                .productName(pResolved).productInput(pInput)
+                .productName(pDisplay).productInput(pInput)
                 .tradeMode(blankToNull(tradeMode)).registerName(blankToNull(register))
                 .dataRange(range).hitMonths(rows.size()).rows(rows)
                 .mixedUnit(mixedUnit)
                 .unitSamples(unitSamples)
-                .summary(buildSummary(tt, target, partner, pInput, pResolved, tradeMode, register,
+                .summary(buildSummary(tt, target, partner, pInput, pDisplay, tradeMode, register,
                         year, month, rows.size(), latest, totalQty, totalRmb, range,
                         mixedUnit, unitSamples))
                 .suggestions(List.of())
                 .build();
+    }
+
+    // =================================================================
+    // 双向合并（问题未指明进出口方向时）
+    // =================================================================
+
+    /**
+     * 合并进口、出口两份查询结果。处理四种情况：
+     * <ol>
+     *   <li>两边都解析失败（商品名不存在）→ 返回进口侧引导（含相近商品候选）；</li>
+     *   <li>只有一边解析失败 → 返回成功一边，开头注明失败口径；</li>
+     *   <li>两边都解析成功但一边查空 → 返回有数据的一边，注明另一边无记录；</li>
+     *   <li>两边都有数据 → rows 合并（每行标 direction），summary 分「进口/出口」两段。</li>
+     * </ol>
+     */
+    private DataQueryResult mergeBothDirections(DataQueryResult in, DataQueryResult out) {
+        boolean inBad = Boolean.TRUE.equals(in.getProductUnresolved());
+        boolean outBad = Boolean.TRUE.equals(out.getProductUnresolved());
+        if (inBad && outBad) {
+            return DataQueryResult.builder()
+                    .tradeType("both").target(in.getTarget())
+                    .productInput(in.getProductInput())
+                    .dataRange(in.getDataRange())
+                    .summary("（问题未指明进出口方向；商品名在进口与出口口径下均未解析到。）\n\n"
+                            + in.getSummary())
+                    .suggestions(in.getSuggestions())
+                    .productUnresolved(true)
+                    .hitMonths(0).rows(List.of())
+                    .build();
+        }
+        if (inBad || outBad) {
+            DataQueryResult ok = inBad ? out : in;
+            String badCn = inBad ? "进口" : "出口";
+            return DataQueryResult.builder()
+                    .tradeType("both").target(ok.getTarget())
+                    .partnerName(ok.getPartnerName())
+                    .productName(ok.getProductName()).productInput(ok.getProductInput())
+                    .dataRange(ok.getDataRange()).hitMonths(ok.getHitMonths())
+                    .rows(tagDirection(ok.getRows(), inBad ? "出口" : "进口"))
+                    .mixedUnit(ok.getMixedUnit()).unitSamples(ok.getUnitSamples())
+                    .summary("（问题未指明进出口方向；" + badCn + "口径未能解析到该商品名，"
+                            + "以下为" + (inBad ? "出口" : "进口") + "口径结果。）\n\n"
+                            + ok.getSummary())
+                    .suggestions(inBad ? out.getSuggestions() : in.getSuggestions())
+                    .build();
+        }
+        boolean inEmpty = in.getRows() == null || in.getRows().isEmpty();
+        boolean outEmpty = out.getRows() == null || out.getRows().isEmpty();
+        if (inEmpty && outEmpty) {
+            List<String> sugg = new ArrayList<>();
+            if (out.getSuggestions() != null) sugg.addAll(out.getSuggestions());
+            if (in.getSuggestions() != null) sugg.addAll(in.getSuggestions());
+            return DataQueryResult.builder()
+                    .tradeType("both").target(in.getTarget())
+                    .partnerName(in.getPartnerName()).productInput(in.getProductInput())
+                    .dataRange(in.getDataRange()).hitMonths(0).rows(List.of())
+                    .summary("（问题未指明进出口方向；进口与出口口径下均无符合条件的数据。）\n\n"
+                            + out.getSummary())
+                    .suggestions(sugg)
+                    .build();
+        }
+        if (inEmpty || outEmpty) {
+            DataQueryResult ok = inEmpty ? out : in;
+            String emptyCn = inEmpty ? "进口" : "出口";
+            return DataQueryResult.builder()
+                    .tradeType("both").target(ok.getTarget())
+                    .partnerName(ok.getPartnerName())
+                    .productName(ok.getProductName()).productInput(ok.getProductInput())
+                    .dataRange(ok.getDataRange()).hitMonths(ok.getHitMonths())
+                    .rows(tagDirection(ok.getRows(), inEmpty ? "出口" : "进口"))
+                    .mixedUnit(ok.getMixedUnit()).unitSamples(ok.getUnitSamples())
+                    .summary("（问题未指明进出口方向；" + emptyCn
+                            + "口径下无符合条件的数据，以下为"
+                            + (inEmpty ? "出口" : "进口") + "结果。）\n\n" + ok.getSummary())
+                    .suggestions(ok.getSuggestions())
+                    .build();
+        }
+        // 两边都有数据：合并 rows（同月相邻，进口在前），summary 分两段
+        List<DataQueryResult.DataRow> merged = new ArrayList<>();
+        merged.addAll(tagDirection(in.getRows(), "进口"));
+        merged.addAll(tagDirection(out.getRows(), "出口"));
+        merged.sort((a, b) -> {
+            int ya = a.getYm() == null ? 0 : a.getYm();
+            int yb = b.getYm() == null ? 0 : b.getYm();
+            if (ya != yb) return Integer.compare(yb, ya);           // 月份倒序
+            boolean aIn = "进口".equals(a.getDirection());
+            boolean bIn = "进口".equals(b.getDirection());
+            return aIn == bIn ? 0 : (aIn ? -1 : 1);                 // 同月进口在前
+        });
+        List<String> units = new ArrayList<>();
+        if (in.getUnitSamples() != null) units.addAll(in.getUnitSamples());
+        if (out.getUnitSamples() != null) {
+            for (String u : out.getUnitSamples()) {
+                if (!units.contains(u)) units.add(u);
+            }
+        }
+        return DataQueryResult.builder()
+                .tradeType("both").target(in.getTarget())
+                .partnerName(in.getPartnerName())
+                .productName(in.getProductName()).productInput(in.getProductInput())
+                .tradeMode(in.getTradeMode()).registerName(in.getRegisterName())
+                .dataRange(in.getDataRange())
+                .hitMonths((in.getHitMonths() == null ? 0 : in.getHitMonths())
+                        + (out.getHitMonths() == null ? 0 : out.getHitMonths()))
+                .rows(merged)
+                .mixedUnit(Boolean.TRUE.equals(in.getMixedUnit())
+                        || Boolean.TRUE.equals(out.getMixedUnit()))
+                .unitSamples(units)
+                .summary("（问题未指明进出口方向，以下同时给出**进口**与**出口**两部分结果。）\n\n"
+                        + "【进口】" + in.getSummary() + "\n\n【出口】" + out.getSummary())
+                .suggestions(List.of())
+                .build();
+    }
+
+    /** 复制一份 rows 并逐行标注贸易方向（原 rows 不可变，需重建） */
+    private List<DataQueryResult.DataRow> tagDirection(List<DataQueryResult.DataRow> rows,
+                                                       String dirCn) {
+        if (rows == null) return List.of();
+        List<DataQueryResult.DataRow> out = new ArrayList<>();
+        for (DataQueryResult.DataRow r : rows) {
+            out.add(DataQueryResult.DataRow.builder()
+                    .ym(r.getYm()).label(r.getLabel())
+                    .quantity(r.getQuantity()).rmb(r.getRmb())
+                    .price(r.getPrice()).unit(r.getUnit())
+                    .direction(dirCn)
+                    .build());
+        }
+        return out;
     }
 
     // =================================================================
@@ -609,7 +747,15 @@ public class TradeDataQueryService {
         return out;
     }
 
-    /** 商品名解析：精确 → 全串 LIKE（唯一则采用）→ 2-gram / 单字兜底给候选。 */
+    /**
+     * 商品名解析：精确 → 品类同义词（LIKE 聚合）→ 全串 LIKE（唯一则采用）→ 2-gram / 单字兜底给候选。
+     *
+     * <p>2026-09-29：SYNONYMS 从「只给候选建议」升级为「品类聚合」。此前「奶制品」
+     * 这类泛称只能拿到一串候选让用户自己挑（库里商品名是「粉状、粒状或其他固状乳及
+     * 奶油，含脂量＞1.5％，加糖…」这种长名，用户根本没法原样复述）。现在命中同义词
+     * 且库里能召回商品时，直接按关键词 LIKE 聚合（一类商品合计），这才是用户问
+     * 「奶制品数据」想要的东西。</p>
+     */
     private Resolved resolveProduct(String table, String raw) {
         String q = raw.trim();
         try {
@@ -617,6 +763,27 @@ public class TradeDataQueryService {
                     "SELECT DISTINCT 商品名称 FROM " + table + " WHERE 商品名称 = ? LIMIT 2",
                     String.class, q);
             if (exact.size() == 1) return new Resolved(exact.get(0), List.of());
+
+            // 品类同义词优先于全串 LIKE：「奶制品」不含于任何规范商品名，
+            // 但它映射的关键词（乳及奶油…）能召回一组商品 → 按品类聚合
+            for (Map.Entry<String, String[]> e : SYNONYMS.entrySet()) {
+                if (q.contains(e.getKey())) {
+                    for (String kw : e.getValue()) {
+                        List<String> hit = jdbc.queryForList(
+                                "SELECT DISTINCT 商品名称 FROM " + table
+                                        + " WHERE 商品名称 LIKE ? LIMIT 1",
+                                String.class, "%" + kw + "%");
+                        if (!hit.isEmpty()) {
+                            List<String> cands = jdbc.queryForList(
+                                    "SELECT DISTINCT 商品名称 FROM " + table
+                                            + " WHERE 商品名称 LIKE ? LIMIT "
+                                            + SUGGEST_LIMIT,
+                                    String.class, "%" + kw + "%");
+                            return new Resolved(null, cands, "%" + kw + "%");
+                        }
+                    }
+                }
+            }
 
             List<String> like = jdbc.queryForList(
                     "SELECT DISTINCT 商品名称 FROM " + table + " WHERE 商品名称 LIKE ? LIMIT "
@@ -811,10 +978,17 @@ public class TradeDataQueryService {
     private static final class Resolved {
         final String value;
         final List<String> candidates;
+        /** 品类 LIKE 模式（如「%乳及奶油%」）：非 null 时按品类聚合查询（value 为 null） */
+        final String pattern;
 
         Resolved(String value, List<String> candidates) {
+            this(value, candidates, null);
+        }
+
+        Resolved(String value, List<String> candidates, String pattern) {
             this.value = value;
             this.candidates = candidates;
+            this.pattern = pattern;
         }
     }
 }

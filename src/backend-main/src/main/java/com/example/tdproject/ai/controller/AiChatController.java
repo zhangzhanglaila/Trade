@@ -241,10 +241,20 @@ public class AiChatController {
                 }
             }
 
+            // 引导轮（商品名未解析 / 查空给了相近建议）带上 hints：前端据此允许
+            // 下一轮短补充（如「冻鱼片」「改成2024年」）拼接上一轮问题重新查询，
+            // 与预测引导轮的上下文衔接机制保持一致。
+            List<String> dataHints = null;
+            if (Boolean.TRUE.equals(data.getProductUnresolved())
+                    || (data.getSuggestions() != null && !data.getSuggestions().isEmpty())) {
+                dataHints = List.of("补充查询条件");
+            }
+
             return AiChatResponse.builder()
                     .route(IntentRouter.ROUTE_DATA_QUERY)
                     .answer(data.getSummary())
                     .dataQuery(data)
+                    .hints(dataHints)
                     .sources(null)
                     .predictResult(null)
                     .debugInfo(debug)

@@ -93,11 +93,11 @@
             <div v-if="m.data.route === 'DATA_QUERY' && (m.data.dataQuery?.rows || []).length">
               <div class="section-title">历史数据（按月倒序）</div>
               <a-table
-                :columns="dataColumns"
+                :columns="colsFor(m)"
                 :data-source="m.data.dataQuery.rows"
                 :pagination="false"
                 size="small"
-                row-key="ym"
+                :row-key="(r) => (r.direction ? `${r.ym}-${r.direction}` : r.ym)"
               />
             </div>
 
@@ -318,6 +318,18 @@ const dataColumns = [
   { title: '单位', dataIndex: 'unit', width: 90 }
 ]
 
+/**
+ * 历史数据表列：问题未指明进出口方向时，后端会把进口、出口两份结果合并返回
+ * （每行带 direction 字段），此时在首列插入「方向」列；单方向结果保持原列。
+ */
+function colsFor(m) {
+  const rows = m?.data?.dataQuery?.rows || []
+  if (rows.some((r) => r.direction)) {
+    return [{ title: '方向', dataIndex: 'direction', width: 70 }, ...dataColumns]
+  }
+  return dataColumns
+}
+
 const ROUTE_LABELS = {
   PREDICT: '贸易预测',
   DATA_QUERY: '历史数据查询',
@@ -484,12 +496,16 @@ async function send() {
   const raw = inputText.value.trim()
   if (!raw || sending.value) return
 
-  // 补全式追问：上一轮是「预测缺槽位」的引导，本轮是短补充（不含新意图启动词），
-  // 就把它拼到上一轮问题后面一起重问，让后端拿到完整上下文重新抽槽位。
+  // 补全式追问：本轮是短补充（不含新意图启动词）时，拼到上一轮问题后面一起
+  // 重问，让后端拿到完整上下文重新抽槽位。覆盖三类上一轮：
+  //   ① 带 hints 的引导轮 —— 预测缺槽位、数据查询商品名未解析/查空有建议；
+  //   ② 历史查询结果轮 —— 用户常见的「进口」「出口呢」视角切换，
+  //      短句里没有商品/伙伴信息，不拼接就会被当成全新的空条件查询。
   let text = raw
-  if (lastTurn.value && lastTurn.value.route === 'PREDICT' && lastTurn.value.hints?.length) {
+  const lt = lastTurn.value
+  if (lt && lt.question && (lt.hints?.length || lt.route === 'DATA_QUERY')) {
     if (isFollowupFill(raw)) {
-      text = `${lastTurn.value.question}，${raw}`
+      text = `${lt.question}，${raw}`
     }
   }
 
