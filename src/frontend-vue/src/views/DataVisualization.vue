@@ -309,6 +309,11 @@
         </div>
         
         <div class="chart-toolbar" v-if="selectedOntology && graphData.nodes.length > 0">
+          <a-button size="small" @click="toggleView">
+            <GlobalOutlined v-if="viewMode === 'focus'" />
+            <ZoomInOutlined v-else />
+            {{ viewMode === 'focus' ? '全局视角' : '聚焦视图' }}
+          </a-button>
           <a-button size="small" @click="resetChart"><ReloadOutlined /> 重置视图</a-button>
         </div>
         <div class="node-status" v-if="selectedNode.id">
@@ -754,7 +759,9 @@ import {
   TeamOutlined,
   DotChartOutlined,
   EyeOutlined,
-  InfoCircleOutlined
+  InfoCircleOutlined,
+  GlobalOutlined,
+  ZoomInOutlined
 } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import { warehouseGraph, getPageOntology, getOntologyVisualization, exportOntologyFile } from '@/api/ontology'
@@ -777,6 +784,10 @@ let myChart = null
 // 图谱数据
 // 加载状态
 const loading = ref(false)
+// 视图模式：'focus' 默认聚焦（看枢纽区域细节，打开页面即此态），
+// 'global' 全局适配（整图铺满画布）。用户要「默认聚焦 + 一键切全局」。
+// 声明放在 renderChart 之前，避免 ESLint no-use-before-define 报错。
+const viewMode = ref('focus')
 
 const graphData = reactive({
   nodes: [],
@@ -929,9 +940,9 @@ const initChart = () => {
       force: {
         repulsion: 1000,
         edgeLength: 150,
-        // gravity 0.1 → 0.25：原先太松，613 个节点铺得远超画布，用户看到的
-        // 只是中央一小块，误以为"太聚焦"；调紧后配合渲染后的自动适配视图。
-        gravity: 0.25,
+        // 保持力导向的自然疏密（0.1）：默认「聚焦视图」看的就是这种布局下
+        // 中心区域的细节，不做收紧；需要看全局时由 fitView() 适配画布。
+        gravity: 0.1,
         // 一次性算完布局再显示：关掉逐帧模拟动画，首次渲染完成后节点位置
         // 即已稳定，fitView() 才能拿到确定的包围盒去做全图适配。
         layoutAnimation: false
@@ -970,21 +981,17 @@ const initChart = () => {
 const renderChart = () => {
   if (!myChart) return
   const limited = applyNodeLimit(graphData.nodes, graphData.links, nodeLimit.value)
+  // 默认「聚焦视图」：不自动 fitView，保留力导向布局的自然视角，让用户
+  // 直接看到枢纽节点区域的细节；想看整体可点上方「全局视角」一键切换。
   myChart.setOption({
     series: [{
       data: limited.nodes,
-      links: limited.links
+      links: limited.links,
+      center: null,
+      zoom: 1
     }]
   })
-  // 力导向布局一次性算完（layoutAnimation:false），首个 finished 帧上节点
-  // 坐标已确定，此时计算包围盒做全图适配，让用户打开页面看到的是全局
-  // 而不是缩在画布一角。
-  const fitOnce = () => {
-    myChart.off('finished', fitOnce)
-    fitView()
-  }
-  myChart.off('finished', fitOnce)
-  myChart.on('finished', fitOnce)
+  viewMode.value = 'focus'
 }
 
 /**
@@ -2915,14 +2922,35 @@ const highlightAssociations = (nodeIds, associations) => {
 }
 
 // 重置视图
+/** 聚焦视图 = 初始自然视角（zoom=1、不设 center）。 */
+const focusView = () => {
+  if (!myChart) return
+  myChart.setOption({ series: [{ center: null, zoom: 1 }] })
+}
+
+/** 在「聚焦视图」与「全局视角」之间一键切换。 */
+const toggleView = () => {
+  if (!myChart) return
+  if (viewMode.value === 'focus') {
+    fitView()
+    viewMode.value = 'global'
+  } else {
+    focusView()
+    viewMode.value = 'focus'
+  }
+}
+
 const resetChart = () => {
-  // 恢复"全局适配视图"，而不是清空数据，也不是回到 zoom=1（那会再次
-  // 聚焦到布局坐标原点附近的一小块）。
+  // 按当前视图模式复位：聚焦态回到初始视角，全局态重新适配铺满画布。
   const limited = applyNodeLimit(graphData.nodes, graphData.links, nodeLimit.value)
   myChart.setOption({
     series: [{ data: limited.nodes, links: limited.links }]
   })
-  fitView()
+  if (viewMode.value === 'global') {
+    fitView()
+  } else {
+    focusView()
+  }
   message.success('视图已重置')
 }
 onMounted(() => {
