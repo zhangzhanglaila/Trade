@@ -1,13 +1,46 @@
 <template>
   <div class="qa-card">
-    <div class="qa-header">
-      <h2 class="qa-title">智能问答</h2>
-      <a-space>
-        <a-button @click="clearChat">清空对话</a-button>
-      </a-space>
-    </div>
+    <!-- 左侧：历史会话列表 -->
+    <aside class="qa-side">
+      <div class="qa-side-head">
+        <span class="qa-side-title">历史对话</span>
+        <a-button type="primary" size="small" @click="newChat">新建会话</a-button>
+      </div>
+      <div class="qa-side-list">
+        <div
+          v-for="c in conversations"
+          :key="c.id"
+          class="conv-item"
+          :class="{ active: c.id === activeId }"
+          @click="openConversation(c.id)"
+        >
+          <div class="conv-title">{{ c.title }}</div>
+          <div class="conv-meta">
+            <span class="conv-time">{{ fmtTime(c.updateTime) }}</span>
+            <a-popconfirm
+              title="删除这条对话？"
+              ok-text="删除"
+              cancel-text="取消"
+              @confirm.stop="removeConversation(c.id)"
+            >
+              <span class="conv-del" @click.stop>删除</span>
+            </a-popconfirm>
+          </div>
+        </div>
+        <div v-if="conversations.length === 0" class="conv-empty">暂无历史对话</div>
+      </div>
+    </aside>
 
-    <a-collapse v-model:activeKey="collapseActive" class="qa-advanced">
+    <!-- 右侧：对话区 -->
+    <div class="qa-main">
+      <div class="qa-header">
+        <h2 class="qa-title">智能问答</h2>
+        <a-space>
+          <a-button @click="clearChat">清空对话</a-button>
+        </a-space>
+      </div>
+
+      <a-collapse v-model:activeKey="collapseActive" class="qa-advanced">
       <a-collapse-panel key="advanced" header="高级参数（可选）">
         <a-form layout="inline" :model="ragForm" style="margin-bottom: 8px">
           <a-form-item label="国家(country)">
@@ -182,29 +215,39 @@
       </div>
     </div>
 
-    <div class="qa-input">
-      <a-textarea
-        v-model:value="inputText"
-        placeholder="输入你的问题，Enter 发送，Shift+Enter 换行"
-        :auto-size="{ minRows: 2, maxRows: 4 }"
-        @keydown="onKeydown"
-      />
-      <div class="qa-actions">
-        <a-button type="primary" :loading="sending" :disabled="!inputText.trim()" @click="send">
-          发送
-        </a-button>
+      <div class="qa-input">
+        <a-textarea
+          v-model:value="inputText"
+          placeholder="输入你的问题，Enter 发送，Shift+Enter 换行"
+          :auto-size="{ minRows: 2, maxRows: 4 }"
+          @keydown="onKeydown"
+        />
+        <div class="qa-actions">
+          <a-button type="primary" :loading="sending" :disabled="!inputText.trim()" @click="send">
+            发送
+          </a-button>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, nextTick } from 'vue'
+import { ref, reactive, nextTick, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import MarkdownIt from 'markdown-it'
 import DOMPurifyDefault from 'dompurify'
 import { chatStream } from '@/api/ai'
+import {
+  listConversations,
+  getConversation,
+  getActiveId,
+  setActiveId,
+  createConversation,
+  saveConversation,
+  deleteConversation
+} from '@/utils/conversation'
 
 // ---------------------------------------------------------------------------
 // Markdown 渲染
@@ -285,6 +328,24 @@ const predictForm = reactive({
 const messages = ref([])
 const inputText = ref('')
 const sending = ref(false)
+
+// ---------------------------------------------------------------------------
+// 会话持久化状态
+// ---------------------------------------------------------------------------
+// 左侧历史会话列表（索引，不含消息体）
+const conversations = ref([])
+// 当前活跃会话 id
+const activeId = ref(null)
+
+// 「刷新后进新会话」 vs 「切页回来恢复当前会话」的区分：
+//   两者对 Vue 而言都是组件重新挂载，无法直接区分。这里用 sessionStorage
+//   记录「当前 tab 的活跃会话 id」：
+//     - 切页（SPA 路由切换）不重载页面，sessionStorage 的活跃 id 仍在 → 恢复该会话；
+//     - 刷新（F5）会触发 beforeunload，我们在那里清掉 sessionStorage 的活跃 id，
+//       于是重载后就是「没有活跃 id」→ 新建会话。
+// sessionStorage 键（区别于 conversation.js 里 localStorage 的持久键）
+const SESSION_ACTIVE_KEY = 'wb.conv.sessionActive'
+
 
 // 流式问答进行中，展示给用户的当前阶段文案（如「正在查询历史数据」）。
 // 为空时显示默认的「正在深度思考」。
@@ -565,6 +626,8 @@ async function send() {
     sending.value = false
     thinkingStage.value = ''
     scrollToBottom()
+    // 无论成功失败，都把当前会话落盘（刷新后消息不丢）
+    persistConversation()
   }
 }
 
@@ -593,6 +656,7 @@ function onKeydown(e) {
 function clearChat() {
   messages.value = []
   lastTurn.value = null
+  // 清空后当前会话不再有消息，下次发言会重新生成标题
 }
 
 function clearAdvanced() {
@@ -608,14 +672,193 @@ function clearAdvanced() {
   predictForm.tradeMode = ''
   predictForm.registerName = ''
 }
+
+// ---------------------------------------------------------------------------
+// 会话管理
+// ---------------------------------------------------------------------------
+
+/** 刷新左侧会话列表。 */
+function refreshConversations() {
+  conversations.value = listConversations()
+}
+
+/** 时间格式化：今天显示 HH:mm，否则显示 MM-DD。 */
+function fmtTime(ts) {
+  if (!ts) return ''
+  const d = dayjs(ts)
+  const today = dayjs().startOf('day')
+  if (d.isAfter(today)) return d.format('HH:mm')
+  return d.format('MM-DD')
+}
+
+/** 新建会话：清空消息区，生成新 id 并设为当前活跃。 */
+function newChat() {
+  const id = createConversation()
+  activeId.value = id
+  messages.value = []
+  lastTurn.value = null
+  // 记录到 sessionStorage，保证切页回来仍停在这个新会话
+  sessionStorage.setItem(SESSION_ACTIVE_KEY, id)
+  scrollToBottom()
+}
+
+/** 打开某个历史会话：回填消息，设为当前活跃。 */
+function openConversation(id) {
+  if (id === activeId.value) return
+  const conv = getConversation(id)
+  activeId.value = id
+  messages.value = conv.messages || []
+  lastTurn.value = null
+  sessionStorage.setItem(SESSION_ACTIVE_KEY, id)
+  scrollToBottom()
+}
+
+/** 删除会话：若删的是当前活跃会话，则进入一个新会话。 */
+function removeConversation(id) {
+  deleteConversation(id)
+  refreshConversations()
+  if (activeId.value === id) {
+    newChat()
+  }
+}
+
+/** 持久化当前会话（供 send 后调用）。 */
+function persistConversation() {
+  if (!activeId.value) return
+  saveConversation(activeId.value, messages.value)
+  refreshConversations()
+}
+
+onMounted(() => {
+  refreshConversations()
+
+  // 区分「刷新」与「切页回来」：
+  //   sessionStorage 有活跃 id  → 切页回来，恢复该会话；
+  //   否则（刷新/首次进入）      → 新建会话。
+  const sid = sessionStorage.getItem(SESSION_ACTIVE_KEY)
+  if (sid) {
+    const conv = getConversation(sid)
+    if (conv.messages && conv.messages.length) {
+      activeId.value = sid
+      messages.value = conv.messages
+    } else {
+      // 会话已被删除或没有消息，回退到新建
+      newChat()
+    }
+  } else {
+    newChat()
+  }
+})
+
+// 刷新/关闭时清掉 sessionStorage 的活跃标记，保证下次进入是「新会话」。
+// 注意：SPA 路由切换不会触发 beforeunload，所以切页回来仍能恢复。
+window.addEventListener('beforeunload', () => {
+  sessionStorage.removeItem(SESSION_ACTIVE_KEY)
+})
 </script>
 
 <style scoped>
 .qa-card {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
   background: #fff;
+  padding: 0;
+}
+
+/* ---------------- 左侧会话列表 ---------------- */
+.qa-side {
+  width: 240px;
+  min-width: 240px;
+  border-right: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  background: #fafafa;
+}
+
+.qa-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px;
+}
+
+.qa-side-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.qa-side-list {
+  flex: 1;
+  overflow: auto;
+  padding: 0 8px 8px;
+}
+
+.conv-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.conv-item:hover {
+  background: #f0f0f0;
+}
+
+.conv-item.active {
+  background: #e6f7ff;
+  border: 1px solid #91d5ff;
+}
+
+.conv-title {
+  font-size: 13px;
+  color: #333;
+  line-height: 1.4;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.conv-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.conv-time {
+  font-size: 11px;
+  color: #999;
+}
+
+.conv-del {
+  font-size: 11px;
+  color: #ff4d4f;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.conv-item:hover .conv-del {
+  opacity: 1;
+}
+
+.conv-empty {
+  padding: 20px 0;
+  text-align: center;
+  font-size: 12px;
+  color: #bbb;
+}
+
+/* ---------------- 右侧对话区 ---------------- */
+.qa-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   padding: 16px 24px;
 }
 
