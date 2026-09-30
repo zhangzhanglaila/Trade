@@ -2,13 +2,15 @@ import json
 import time
 import urllib.parse
 
-import requests
+# 用 curl_cffi 替代 requests：mofcom 的 WAF 按 TLS 指纹(JA3)拦截 Python
+# urllib3 的握手（表现为 Connection reset by peer），而 curl_cffi 能模拟
+# 真实 Chrome 的 TLS 指纹，实测可正常拿到 200 与内容。
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 
 from common.crawler_base import Crawler
 from DrissionPage.items import NoneElement
 
-from store.es import EsStorage
 
 INDEX_BASE_URL = "https://kz.mofcom.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit"
 COMMON_PARAMS = {
@@ -42,7 +44,6 @@ NEWS_PAGE_BASE_URL='https://kz.mofcom.gov.cn'
 class MofcomCrawler(Crawler):
   def __init__(self, driver_path_or_address=None, tab_id=None):
     super().__init__(driver_path_or_address, tab_id)
-    self.storage = EsStorage()
 
   def run(self):
     pass
@@ -57,7 +58,7 @@ class MofcomCrawler(Crawler):
     params = COMMON_PARAMS.copy()
     params["paramJson"] = param_json
 
-    response = requests.get(INDEX_BASE_URL, params=params, headers=HEADERS)
+    response = requests.get(INDEX_BASE_URL, params=params, headers=HEADERS, impersonate="chrome")
 
     if response.status_code != 200:
       raise Exception(f"请求失败，第 {page} 页，状态码：{response.status_code}")
