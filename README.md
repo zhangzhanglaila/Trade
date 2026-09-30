@@ -1,6 +1,6 @@
-# 中哈贸易数据智能分析系统
+# 中亚五国对华贸易数据智能分析系统
 
-> 面向中国—哈萨克斯坦（及中亚五国）外贸数据的**采集 → 知识图谱 → 智能问答 → 预测**一体化系统。
+> 面向中亚五国（哈萨克斯坦、乌兹别克斯坦、吉尔吉斯斯坦、塔吉克斯坦、土库曼斯坦）对华外贸数据的**采集 → 知识图谱 → 智能问答 → 预测**一体化系统。
 > 涵盖多国语料采集、RDF 知识图谱构建与可视化、基于大模型的贸易问答、以及进出口价格/数量的时序预测。
 
 本仓库为**单一 monorepo**，已把原先散落在 13 个嵌套 Git 仓库中的全部子工程合并到统一版本控制之下，
@@ -78,8 +78,8 @@
 | 训练后端 | JDK 17 · Spring Boot 2.7.14 |
 | 推理/训练 | Python · Flask · PyTorch（LSTM-Transformer） |
 | 大屏 | AJ-Report 1.3.0 |
-| 存储 | MySQL 8 · Redis · Apache Jena TDB（嵌入式 RDF） · Neo4j（可选） · Milvus（可选） |
-| 大模型 | Qwen3.5-9B（本地推理，VLM 架构，见 [模型服务器配置要求](docs/模型服务器配置要求.md)） |
+| 存储 | MySQL 8 · Redis · Apache Jena TDB（嵌入式 RDF） · Neo4j（可选） · 向量检索默认 MySQL 表（`news_vectors`），Milvus（可选） |
+| 大模型 | DeepSeek（对话，`deepseek-chat`）· SiliconFlow `BAAI/bge-m3`（嵌入，1024 维）；Qwen3.5-9B 为预留本地推理资产（需 GPU，见 [模型服务器配置要求](docs/模型服务器配置要求.md)） |
 | 数据规范 | RDF / R2RML / SPARQL |
 
 ---
@@ -236,31 +236,23 @@ python deploy/package-for-server.py --with-models  # 需要问答大模型时加
 
 为便于接手，这里如实列出当前状态。**结项材料撰写前请务必先看 [`docs/模型评测报告.md`](docs/模型评测报告.md)。**
 
-### 预测模型 —— 现有指标不可采信，流程缺陷已定位
+### 预测模型 —— 评测协议缺陷已修复，预测能力仍在改进
 
-四个 LSTM-Transformer 模型日志中的 R² 全为负值（`in_price` −70.38、`in_quantity` −77.68、
-`out_price` −0.42、`out_quantity` −456.05）。**但"模型没有预测能力"这个结论过强** —— 根因是评测协议缺陷：
+早期四个 LSTM-Transformer 模型日志 R² 全为负值（`in_price` −70.38、`in_quantity` −77.68、
+`out_price` −0.42、`out_quantity` −456.05）。根因是评测协议缺陷，已逐一定位并修复：
 
-1. **切分缺陷（头号根因）**：样本按 `商品编码` 升序拼接后 `train_test_split(shuffle=False)`，
-   等于**按商品划分**，测试集恒为"商品编码最大的那批商品"。而 `商品编码` 正是做 Embedding 的特征，
-   这些行从未获得梯度 → 输出等同随机 → **R² 必为负，与数据量无关**。实测真实出口数据 **99.9%
-   的测试样本（379,653/380,201）商品在训练集中从未出现**。
-2. **训练用的是样例文件**（出口仅 29 条样本），证据是 `src/backend-training/logs/trade-service.log`
-   中逐行记录的 `--csv_path`。
-3. **另 3 个真 bug**：评估加载最后 epoch 模型而非早停最佳模型；标准化器/LabelEncoder 在全量上 fit
-   造成泄漏；`import winsound` 在 Linux 上直接 ImportError。
-4. **`src/backend-training/data/进口/merged_input.csv` 实为 xlsx**（文件头 `50 4B 03 04`），
-   `pandas.read_csv` 无法解析。
+1. **切分缺陷（头号根因，已修）**：原按 `商品编码` 排序后 `train_test_split(shuffle=False)`，
+   等于按商品切分，测试集商品从未获得梯度。现改为按时间尾部切独立验证集（`--cutoff_ym` + `--val_ratio`）。
+2. **训练用样例文件（已修）**：现支持真实全量数据，`--sample_mode cap --cap_k N` 按不同月份截取，100% 覆盖商品编码。
+3. **其余 bug（已修）**：评估改加载早停最佳模型；标准化器/LabelEncoder 只在训练集 fit；移除 Linux 下报错的 `import winsound`。
+4. **`merged_input.csv` 实为 xlsx**（文件头 `50 4B 03 04`），`pandas.read_csv` 无法解析。
 
-> **不要在未修复上述缺陷的情况下直接用真实数据重训** —— 否则会再次得到 R²<0，
-> 且因数据量更大而显得更可信。应先修复，再用 3~5 万行验证评估链路可信，最后才上全量；
-> 评测须加入**朴素基线**（上一期值 / 季节均值），因为本任务本质接近随机游走。
+**当前状态**：预测头已改为 residual（回归"相对窗口末期的增量"，输出全零即退化为 carry-forward 朴素基线），并在验证集上标定收缩系数 α（`--calibrate_only`，预测 = 窗口末期值 + α×网络输出）。但修复后模型相对「上一期值」基线的提升仍有限（本任务本质接近随机游走），预测能力需持续改进。详细诊断与整改方案见 [`docs/模型评测报告.md`](docs/模型评测报告.md)。
 
 ### 接口可用性
 
-- `POST /predict_*` 当前返回 500：`trade` 库及 `trade_in` / `trade_out` 两张表**全项目无脚本创建**，
-  且 `TRAIN_DB_PASSWORD` 与目标机 MySQL 口令需对齐。
-- 智能问答的 LLM 兜底依赖本地 Qwen 推理服务与 Milvus，未部署时仅剩关键词路由。
+- 智能问答四路由（闲聊 / 贸易预测 / 历史数据查询 / 新闻问答 RAG）均已可用；预测接口 `POST /predict_*` 依赖 Flask 推理服务（:5000），已正常返回结果。
+- 对话 LLM 走 DeepSeek、嵌入走 SiliconFlow `bge-m3`；未配置相应 API Key 时，智能问答退化为关键词路由。
 
 ### 图谱可视化（已修复，但需牢记两个陷阱）
 
