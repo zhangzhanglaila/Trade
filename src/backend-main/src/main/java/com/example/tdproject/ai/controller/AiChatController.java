@@ -142,8 +142,13 @@ public class AiChatController {
                     }
 
                     // 槽位齐全，进入真正预测。Flask 纯 CPU 推理 + 反变换是主要耗时，
-                    // 分阶段推送，让前端持续有反馈。
-                    emitStage(emitter, "正在查询历史数据");
+                    // 分阶段推送，让前端持续有反馈。这里把「正在预测什么」说具体：
+                    // 多用户排队时，用户能看到自己这条请求在算哪个商品的数量/单价，
+                    // 而不是盯着一句笼统的「正在查询」误以为卡死。
+                    String predictWhat = "正在预测「" + slots.getProductName() + "」的"
+                            + ("out".equalsIgnoreCase(slots.getTradeType()) ? "出口" : "进口")
+                            + ("quantity".equalsIgnoreCase(slots.getTarget()) ? "数量" : "单价");
+                    emitStage(emitter, predictWhat);
                     PredictResponse predict;
                     try {
                         predict = predictionService.predict(slots);
