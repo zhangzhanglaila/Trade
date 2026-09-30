@@ -695,6 +695,58 @@ public class TradeDataQueryService {
         return r.value != null ? List.of() : head(r.candidates, limit);
     }
 
+    /**
+     * 把用户的注册地简称解析成库中规范名，供预测直接使用。
+     *
+     * <p>库里注册地存的是省级行政区全称（「新疆维吾尔自治区」「广西壮族自治区」），
+     * 用户常写简称（「新疆」「广西」「内蒙古」）。与商品名同理，预测需要精确到
+     * 单一注册地（Flask 按四键精确组合取历史），因此这里走：
+     *   精确命中 / 唯一 LIKE 命中 → 返回规范名；
+     *   匹配到多个或匹配不到 → 返回 null，由调用方转入引导。</p>
+     */
+    public String resolveRegisterName(String tradeType, String input) {
+        String tt = normalizeTradeType(tradeType);
+        if (tt == null || blankToNull(input) == null) return null;
+        String q = input.trim();
+        try {
+            List<String> exact = jdbc.queryForList(
+                    "SELECT DISTINCT 注册地名称 FROM " + table(tt)
+                            + " WHERE 注册地名称 = ? LIMIT 2", String.class, q);
+            if (exact.size() == 1) return exact.get(0);
+
+            List<String> like = jdbc.queryForList(
+                    "SELECT DISTINCT 注册地名称 FROM " + table(tt)
+                            + " WHERE 注册地名称 LIKE ? LIMIT 2", String.class, "%" + q + "%");
+            if (like.size() == 1) return like.get(0);
+            return null;
+        } catch (Exception e) {
+            log.warn("注册地解析失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 注册地的相近候选；精确命中时返回空列表。供「预测缺注册地」的引导使用。
+     */
+    public List<String> suggestRegisters(String tradeType, String input, int limit) {
+        String tt = normalizeTradeType(tradeType);
+        if (tt == null || blankToNull(input) == null) return List.of();
+        String q = input.trim();
+        try {
+            List<String> exact = jdbc.queryForList(
+                    "SELECT DISTINCT 注册地名称 FROM " + table(tt)
+                            + " WHERE 注册地名称 = ? LIMIT 2", String.class, q);
+            if (exact.size() == 1) return List.of();
+            return head(jdbc.queryForList(
+                    "SELECT DISTINCT 注册地名称 FROM " + table(tt)
+                            + " WHERE 注册地名称 LIKE ? LIMIT " + limit,
+                    String.class, "%" + q + "%"), limit);
+        } catch (Exception e) {
+            log.warn("注册地候选查询失败: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     // =================================================================
     // 内部工具
     // =================================================================

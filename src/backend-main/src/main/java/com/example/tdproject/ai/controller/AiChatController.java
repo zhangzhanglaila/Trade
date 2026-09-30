@@ -4,6 +4,7 @@ import com.example.tdproject.ai.dto.AiChatRequest;
 import com.example.tdproject.ai.dto.AiChatResponse;
 import com.example.tdproject.ai.dto.DataQueryResult;
 import com.example.tdproject.ai.dto.PredictRequest;
+import com.example.tdproject.ai.dto.PredictResponse;
 import com.example.tdproject.ai.intent.IntentResult;
 import com.example.tdproject.ai.intent.IntentRouter;
 import com.example.tdproject.ai.predict.PredictionService;
@@ -112,10 +113,22 @@ public class AiChatController {
                             slots.setProductName(resolved);
                         }
                     }
-                    if (!hints.isEmpty() || productUnresolved) {
-                        if (hints.isEmpty() && productUnresolved) {
-                            hints.add("商品名称");
+                    // 注册地核对：用户常写简称（「新疆」→ 库里是「新疆维吾尔自治区」），
+                    // 唯一能解析到规范名时替换继续预测，否则转引导（给全称候选）。
+                    boolean registerUnresolved = false;
+                    if (slots != null && !isBlank(slots.getRegisterName())
+                            && !isBlank(slots.getTradeType())) {
+                        String resolvedReg = tradeDataQueryService.resolveRegisterName(
+                                slots.getTradeType(), slots.getRegisterName());
+                        if (resolvedReg == null) {
+                            registerUnresolved = true;
+                        } else {
+                            slots.setRegisterName(resolvedReg);
                         }
+                    }
+                    if (!hints.isEmpty() || productUnresolved || registerUnresolved) {
+                        if (productUnresolved) hints.add("商品名称");
+                        if (registerUnresolved) hints.add("境内注册地（请用全称）");
                         emitDone(emitter, AiChatResponse.builder()
                                 .route(IntentRouter.ROUTE_PREDICT)
                                 .answer(buildPredictGuidance(slots, hints))
@@ -131,7 +144,22 @@ public class AiChatController {
                     // 槽位齐全，进入真正预测。Flask 纯 CPU 推理 + 反变换是主要耗时，
                     // 分阶段推送，让前端持续有反馈。
                     emitStage(emitter, "正在查询历史数据");
-                    var predict = predictionService.predict(slots);
+                    PredictResponse predict;
+                    try {
+                        predict = predictionService.predict(slots);
+                    } catch (IllegalArgumentException e) {
+                        // 组合无历史数据等业务性失败：转成友好引导，不把裸报错抛给用户
+                        emitDone(emitter, AiChatResponse.builder()
+                                .route(IntentRouter.ROUTE_PREDICT)
+                                .answer(e.getMessage())
+                                .hints(List.of())
+                                .predictResult(null)
+                                .sources(null)
+                                .debugInfo(debugMap(intent))
+                                .build());
+                        emitter.complete();
+                        return;
+                    }
                     emitStage(emitter, "正在整理预测结果");
 
                     emitDone(emitter, AiChatResponse.builder()
@@ -190,10 +218,21 @@ public class AiChatController {
                     slots.setProductName(resolved);
                 }
             }
-            if (!hints.isEmpty() || productUnresolved) {
-                if (hints.isEmpty() && productUnresolved) {
-                    hints.add("商品名称");
+            // 注册地核对：简称（新疆/广西/内蒙古）解析成规范全称
+            boolean registerUnresolved = false;
+            if (slots != null && !isBlank(slots.getRegisterName())
+                    && !isBlank(slots.getTradeType())) {
+                String resolvedReg = tradeDataQueryService.resolveRegisterName(
+                        slots.getTradeType(), slots.getRegisterName());
+                if (resolvedReg == null) {
+                    registerUnresolved = true;
+                } else {
+                    slots.setRegisterName(resolvedReg);
                 }
+            }
+            if (!hints.isEmpty() || productUnresolved || registerUnresolved) {
+                if (productUnresolved) hints.add("商品名称");
+                if (registerUnresolved) hints.add("境内注册地（请用全称）");
                 return AiChatResponse.builder()
                         .route(IntentRouter.ROUTE_PREDICT)
                         .answer(buildPredictGuidance(slots, hints))
@@ -204,7 +243,20 @@ public class AiChatController {
                         .build();
             }
 
-            var predict = predictionService.predict(slots);
+            PredictResponse predict;
+            try {
+                predict = predictionService.predict(slots);
+            } catch (IllegalArgumentException e) {
+                // 组合无历史数据等业务性失败：转成友好引导，不把裸报错抛给用户
+                return AiChatResponse.builder()
+                        .route(IntentRouter.ROUTE_PREDICT)
+                        .answer(e.getMessage())
+                        .hints(List.of())
+                        .predictResult(null)
+                        .sources(null)
+                        .debugInfo(debug)
+                        .build();
+            }
 
             return AiChatResponse.builder()
                     .route(IntentRouter.ROUTE_PREDICT)
@@ -447,6 +499,20 @@ public class AiChatController {
                     sb.append("    ").append(i + 1).append(". ").append(near.get(i)).append("\n");
                 }
                 sb.append("  请把商品名换成上面的写法再问一次。\n");
+            }
+        }
+
+        // 注册地核对：用户写简称（新疆/广西/内蒙古）时给全称候选
+        if (s != null && !isBlank(s.getRegisterName()) && !isBlank(s.getTradeType())) {
+            List<String> nearRegs = tradeDataQueryService.suggestRegisters(
+                    s.getTradeType(), s.getRegisterName(), 8);
+            if (!nearRegs.isEmpty()) {
+                sb.append("\n· ⚠️ 库里注册地用的是全称，没有「").append(s.getRegisterName())
+                        .append("」。\n  相近的规范注册地有：\n");
+                for (int i = 0; i < nearRegs.size(); i++) {
+                    sb.append("    ").append(i + 1).append(". ").append(nearRegs.get(i)).append("\n");
+                }
+                sb.append("  请把注册地换成上面的写法再问一次。\n");
             }
         }
 

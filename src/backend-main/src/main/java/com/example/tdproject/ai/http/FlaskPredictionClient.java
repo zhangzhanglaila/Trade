@@ -131,12 +131,40 @@ public class FlaskPredictionClient {
 
             HttpResponse<String> resp = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (resp.statusCode() / 100 != 2) {
-                throw new IllegalStateException("Flask HTTP " + resp.statusCode() + ": " + resp.body());
+                throw buildError(resp.statusCode(), resp.body());
             }
             return objectMapper.readValue(resp.body(), new TypeReference<>() {});
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Flask 请求失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 把 Flask 的非 2xx 响应转成异常。
+     *
+     * <p>「组合无历史数据」（404）是用户选了库里不存在的组合导致的**业务性失败**，
+     * 不是系统错误 —— 直接抛 `Flask HTTP 404: {...一堆 JSON...}` 会让用户看到
+     * 无从下手的乱码。这里识别出该情况，抛 {@link IllegalArgumentException}
+     * 并带上友好的中文说明；调用方（AiChatController）据此转成引导性回答。
+     * 其余错误（500 等）仍保留原始信息，方便排查。</p>
+     */
+    private RuntimeException buildError(int status, String body) {
+        if (status == 404) {
+            String err = null;
+            try {
+                Map<String, Object> m = objectMapper.readValue(body, new TypeReference<>() {});
+                if (m.get("error") != null) err = String.valueOf(m.get("error"));
+            } catch (Exception ignore) {
+                // body 不是 JSON，忽略
+            }
+            if (err != null && err.contains("没有历史数据")) {
+                return new IllegalArgumentException(
+                        "该「贸易伙伴 + 商品 + 贸易方式 + 注册地」组合在库中没有历史数据，无法预测。\n"
+                                + "请确认商品名称、贸易方式、境内注册地都用了库里的规范写法"
+                                + "（例如注册地要用「新疆维吾尔自治区」而非「新疆」）后重试。");
+            }
+        }
+        return new IllegalStateException("Flask HTTP " + status + ": " + body);
     }
 }
