@@ -133,3 +133,9 @@ logs/
 
 # AJ-Report 运行期缓存（Ehcache 落盘，不入库）
 /src/dashboard-ajreport/cache/
+
+# ⚠️ 反向放行：训练模型产物的 out/ 目录（出口模型）不是「构建产物」，
+# 其中编码器/标准化器/特征口径(pkl)是推理必需且体积小(≤77KB)，必须入库；
+# 权重 *.pth 仍由上方第 7 节排除。
+!/src/backend-training/python-scripts/model/trade_Transformer/out/
+!/src/backend-training/python-scripts/model/trade_Transformer/out/**
