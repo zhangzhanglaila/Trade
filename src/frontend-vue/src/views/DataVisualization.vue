@@ -293,6 +293,11 @@
           <div class="empty-title">请选择本体</div>
           <div class="empty-desc">从上方下拉框选择一个本体以查看图谱</div>
         </div>
+        <div v-else-if="loading" class="empty-chart-overlay">
+          <a-spin size="large" />
+          <div class="empty-title">正在加载图谱数据…</div>
+          <div class="empty-desc">全图扫描与渲染约需十几秒，请稍候</div>
+        </div>
         <div v-else-if="graphData.nodes.length === 0" class="empty-chart-overlay">
           <ReloadOutlined style="font-size: 64px; color: #d9d9d9;" />
           <div class="empty-title">暂无数据</div>
