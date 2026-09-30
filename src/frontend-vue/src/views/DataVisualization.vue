@@ -20,12 +20,13 @@
             {{ item.name }}
           </a-select-option>
         </a-select>
-        <a-select v-model:value="nodeLimit" style="width: 130px;">
-          <a-select-option value="100">节点数量100</a-select-option>
-          <a-select-option value="200">节点数量200</a-select-option>
-          <a-select-option value="300">节点数量300</a-select-option>
-          <a-select-option value="400">节点数量400</a-select-option>
+        <a-select v-model:value="nodeLimit" style="width: 130px;" @change="renderChart">
+          <a-select-option value="all">全部节点</a-select-option>
           <a-select-option value="500">节点数量500</a-select-option>
+          <a-select-option value="400">节点数量400</a-select-option>
+          <a-select-option value="300">节点数量300</a-select-option>
+          <a-select-option value="200">节点数量200</a-select-option>
+          <a-select-option value="100">节点数量100</a-select-option>
         </a-select>
       </div>
       <div class="toolbar-right">
@@ -766,7 +767,9 @@ const ontologyList = ref([])
 
 // ========== 状态变量 ==========
 const selectedOntology = ref(null)
-const nodeLimit = ref('100')
+// 「全部节点」为默认：本体的图本来就该全局看；此前这个下拉框只有 UI 没有实际
+// 截断逻辑（nodeLimit 从未被读取），容易让人误以为渲染的是 100 个节点的子集。
+const nodeLimit = ref('all')
 const searchQuery = ref('')
 const chartContainer = ref(null)
 let myChart = null
@@ -926,7 +929,12 @@ const initChart = () => {
       force: {
         repulsion: 1000,
         edgeLength: 150,
-        gravity: 0.1
+        // gravity 0.1 → 0.25：原先太松，613 个节点铺得远超画布，用户看到的
+        // 只是中央一小块，误以为"太聚焦"；调紧后配合渲染后的自动适配视图。
+        gravity: 0.25,
+        // 一次性算完布局再显示：关掉逐帧模拟动画，首次渲染完成后节点位置
+        // 即已稳定，fitView() 才能拿到确定的包围盒去做全图适配。
+        layoutAnimation: false
       },
       lineStyle: {
         curveness: 0.1
@@ -961,11 +969,74 @@ const initChart = () => {
 // 渲染图表
 const renderChart = () => {
   if (!myChart) return
+  const limited = applyNodeLimit(graphData.nodes, graphData.links, nodeLimit.value)
   myChart.setOption({
     series: [{
-      data: graphData.nodes,
-      links: graphData.links
+      data: limited.nodes,
+      links: limited.links
     }]
+  })
+  // 力导向布局一次性算完（layoutAnimation:false），首个 finished 帧上节点
+  // 坐标已确定，此时计算包围盒做全图适配，让用户打开页面看到的是全局
+  // 而不是缩在画布一角。
+  const fitOnce = () => {
+    myChart.off('finished', fitOnce)
+    fitView()
+  }
+  myChart.off('finished', fitOnce)
+  myChart.on('finished', fitOnce)
+}
+
+/**
+ * 按「节点数量」下拉框截断：取度数（连线数）最高的 N 个节点，
+ * 并只保留两端都在集合内的边——孤悬的半截边没有意义。
+ * limit 为 'all' 时不截断。
+ */
+const applyNodeLimit = (nodes, links, limit) => {
+  if (limit === 'all' || !limit) return { nodes, links }
+  const n = parseInt(limit)
+  if (!Number.isFinite(n) || n >= nodes.length) return { nodes, links }
+  const degree = new Map()
+  links.forEach((l) => {
+    degree.set(l.source, (degree.get(l.source) || 0) + 1)
+    degree.set(l.target, (degree.get(l.target) || 0) + 1)
+  })
+  const top = [...nodes]
+    .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
+    .slice(0, n)
+  const idSet = new Set(top.map((x) => x.id))
+  return { nodes: top, links: links.filter((l) => idSet.has(l.source) && idSet.has(l.target)) }
+}
+
+/**
+ * 全图适配视图：取当前所有节点的布局坐标包围盒，换算出让全图铺满画布的
+ * zoom 与 center。没有这个步骤时初始 zoom=1，布局坐标远超画布尺寸，
+ * 用户只能看到枢纽节点附近的一小块，误以为图谱"太聚焦"。
+ */
+const fitView = () => {
+  if (!myChart) return
+  const seriesModel = myChart.getModel().getSeriesByIndex(0)
+  if (!seriesModel) return
+  const data = seriesModel.getData()
+  if (!data || data.count() === 0) return
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  data.each((idx) => {
+    const pos = data.getItemLayout(idx)
+    if (!pos || !Number.isFinite(pos[0]) || !Number.isFinite(pos[1])) return
+    if (pos[0] < minX) minX = pos[0]
+    if (pos[0] > maxX) maxX = pos[0]
+    if (pos[1] < minY) minY = pos[1]
+    if (pos[1] > maxY) maxY = pos[1]
+  })
+  const w = maxX - minX
+  const h = maxY - minY
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return
+  const cw = myChart.getWidth()
+  const ch = myChart.getHeight()
+  // 留 10% 边距；上限 1.5 防止图很小时被过分放大
+  const zoom = Math.min(Math.min(cw / w, ch / h) * 0.9, 1.5)
+  myChart.setOption({
+    series: [{ zoom, center: [(minX + maxX) / 2, (minY + maxY) / 2] }]
   })
 }
 
@@ -2845,15 +2916,13 @@ const highlightAssociations = (nodeIds, associations) => {
 
 // 重置视图
 const resetChart = () => {
-  // 恢复初始位置和缩放，而不是清空数据
+  // 恢复"全局适配视图"，而不是清空数据，也不是回到 zoom=1（那会再次
+  // 聚焦到布局坐标原点附近的一小块）。
+  const limited = applyNodeLimit(graphData.nodes, graphData.links, nodeLimit.value)
   myChart.setOption({
-    series: [{
-      center: null,
-      zoom: 1,
-      data: graphData.nodes,
-      links: graphData.links
-    }]
+    series: [{ data: limited.nodes, links: limited.links }]
   })
+  fitView()
   message.success('视图已重置')
 }
 onMounted(() => {
