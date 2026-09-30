@@ -127,6 +127,24 @@ public class AiChatController {
                         }
                     }
                     if (!hints.isEmpty() || productUnresolved || registerUnresolved) {
+                        // 商品名是俗称（如「牛肉」对应多个规范商品）但其余槽位齐全时，
+                        // 尝试聚合预测：逐个规范商品预测数量后加总，避免让用户反复挑。
+                        PredictResponse agg = null;
+                        if (productUnresolved && !registerUnresolved && hints.isEmpty()) {
+                            agg = tryAggregatePredict(slots);
+                        }
+                        if (agg != null) {
+                            emitStage(emitter, "正在整理预测结果");
+                            emitDone(emitter, AiChatResponse.builder()
+                                    .route(IntentRouter.ROUTE_PREDICT)
+                                    .answer(buildAggregatedAnswer(agg, slots))
+                                    .predictResult(agg)
+                                    .sources(null)
+                                    .debugInfo(debugMap(intent))
+                                    .build());
+                            emitter.complete();
+                            return;
+                        }
                         if (productUnresolved) hints.add("商品名称");
                         if (registerUnresolved) hints.add("境内注册地（请用全称）");
                         emitDone(emitter, AiChatResponse.builder()
@@ -236,6 +254,20 @@ public class AiChatController {
                 }
             }
             if (!hints.isEmpty() || productUnresolved || registerUnresolved) {
+                // 商品名是俗称但其余槽位齐全时，尝试聚合预测（逐个规范商品预测数量加总）
+                PredictResponse agg = null;
+                if (productUnresolved && !registerUnresolved && hints.isEmpty()) {
+                    agg = tryAggregatePredict(slots);
+                }
+                if (agg != null) {
+                    return AiChatResponse.builder()
+                            .route(IntentRouter.ROUTE_PREDICT)
+                            .answer(buildAggregatedAnswer(agg, slots))
+                            .predictResult(agg)
+                            .sources(null)
+                            .debugInfo(debug)
+                            .build();
+                }
                 if (productUnresolved) hints.add("商品名称");
                 if (registerUnresolved) hints.add("境内注册地（请用全称）");
                 return AiChatResponse.builder()
@@ -433,6 +465,129 @@ public class AiChatController {
         }
 
         // 远期月份可靠性警示
+        if (slots != null && slots.getYear() != null && slots.getMonth() != null) {
+            int targetYm = slots.getYear() * 100 + slots.getMonth();
+            int maxYm = tradeDataQueryService.maxDataYm(slots.getTradeType());
+            if (maxYm > 0 && targetYm > maxYm + 1) {
+                sb.append("\n\n⚠️ 可靠性提醒：你问的是 ").append(slots.getYear()).append("-")
+                        .append(String.format("%02d", slots.getMonth()))
+                        .append("，但该方向数据只更新到 ")
+                        .append(maxYm / 100).append("-")
+                        .append(String.format("%02d", maxYm % 100))
+                        .append("。当前数值是基于最近历史外推的结果，月份越远越不可靠，请谨慎参考。");
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 尝试「品类聚合预测」：用户问「牛肉」这类俗称（库里对应多个规范商品）时，
+     * 与其让他反复挑具体商品，不如逐个规范商品预测数量后加总。
+     *
+     * <p>仅当满足以下全部条件才聚合，否则返回 null 交由调用方走原引导：</p>
+     * <ul>
+     *   <li>目标是「数量」（单价对不同商品没有可加性）；</li>
+     *   <li>商品俗称能召回 1~3 个规范商品（太多如「奶制品」7 个，逐个预测会输出一堆空结果）；</li>
+     *   <li>其余槽位已齐全（由调用方保证 hints 为空、注册地未 unresolved）。</li>
+     * </ul>
+     */
+    private PredictResponse tryAggregatePredict(PredictRequest slots) {
+        if (slots == null || isBlank(slots.getProductName()) || isBlank(slots.getTradeType())) {
+            return null;
+        }
+        if (!"quantity".equalsIgnoreCase(slots.getTarget())) {
+            return null;
+        }
+        List<String> cands = tradeDataQueryService.suggestProducts(
+                slots.getTradeType(), slots.getProductName(), 4);
+        if (cands.isEmpty() || cands.size() > 3) {
+            return null;
+        }
+        return predictAggregated(slots, cands);
+    }
+
+    /**
+     * 对一组规范商品逐个预测数量并加总；无任一商品可预测（组合都无历史数据）时返回 null。
+     */
+    private PredictResponse predictAggregated(PredictRequest slots, List<String> candidates) {
+        double total = 0;
+        String unit = null;
+        boolean any = false;
+        List<Map<String, Object>> details = new ArrayList<>();
+        for (String p : candidates) {
+            PredictRequest clone = PredictRequest.builder()
+                    .tradeType(slots.getTradeType())
+                    .target(slots.getTarget())
+                    .year(slots.getYear())
+                    .month(slots.getMonth())
+                    .tradePartnerName(slots.getTradePartnerName())
+                    .productName(p)
+                    .tradeMode(slots.getTradeMode())
+                    .registerName(slots.getRegisterName())
+                    .build();
+            try {
+                PredictResponse r = predictionService.predict(clone);
+                if (r != null && r.getValue() != null) {
+                    total += r.getValue();
+                    if (unit == null) unit = r.getUnit();
+                    any = true;
+                    Map<String, Object> d = new HashMap<>();
+                    d.put("productName", p);
+                    d.put("value", r.getValue());
+                    d.put("unit", r.getUnit());
+                    details.add(d);
+                }
+            } catch (IllegalArgumentException e) {
+                // 该商品在当前四键组合下无历史数据，跳过，继续预测其余商品
+            }
+        }
+        if (!any) return null;
+
+        Map<String, Object> raw = new HashMap<>();
+        raw.put("aggregated", true);
+        raw.put("category", slots.getProductName());
+        raw.put("total", total);
+        raw.put("details", details);
+
+        return PredictResponse.builder()
+                .tradeType(slots.getTradeType())
+                .target(slots.getTarget())
+                .value(total)
+                .unit(unit)
+                .raw(raw)
+                .build();
+    }
+
+    /** 品类聚合预测的答案：逐商品明细 + 合计 + 口径。 */
+    private String buildAggregatedAnswer(PredictResponse predict, PredictRequest slots) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("「").append(slots.getProductName()).append("」是一个品类，对应以下规范商品，")
+                .append("逐个预测后加总如下：\n\n");
+
+        List<?> details = predict.getRaw() != null
+                ? (List<?>) predict.getRaw().get("details") : List.of();
+        for (Object o : details) {
+            Map<?, ?> d = (Map<?, ?>) o;
+            sb.append("- ").append(d.get("productName")).append("：")
+                    .append(fmt(((Number) d.get("value")).doubleValue()));
+            if (d.get("unit") != null) sb.append(" ").append(d.get("unit"));
+            sb.append("\n");
+        }
+
+        sb.append("\n**合计：").append(fmt(predict.getValue()));
+        if (predict.getUnit() != null) sb.append(" ").append(predict.getUnit());
+        sb.append("**\n");
+
+        sb.append("\n口径：")
+                .append("in".equalsIgnoreCase(slots.getTradeType()) ? "进口" : "出口").append(" / ")
+                .append(blank(slots.getTradePartnerName())).append(" / ")
+                .append(blank(slots.getProductName())).append("（品类） / ")
+                .append(blank(slots.getTradeMode())).append(" / ")
+                .append(blank(slots.getRegisterName()))
+                .append("，目标月份 ").append(slots.getYear()).append("-")
+                .append(slots.getMonth() < 10 ? "0" + slots.getMonth() : slots.getMonth());
+
+        // 远期月份可靠性警示（与单商品预测同口径）
         if (slots != null && slots.getYear() != null && slots.getMonth() != null) {
             int targetYm = slots.getYear() * 100 + slots.getMonth();
             int maxYm = tradeDataQueryService.maxDataYm(slots.getTradeType());
