@@ -977,12 +977,67 @@ const initChart = () => {
   window.addEventListener('resize', () => myChart.resize())
 }
 
+/**
+ * 计算聚焦中心：优先名称含「货物」的节点（本体里最核心的类别），
+ * 取其中度数最大者；没有则用全图度数最大的节点。返回布局坐标 [x, y]。
+ */
+const focusCenter = () => {
+  if (!graphData.nodes.length) return null
+  const degree = new Map()
+  graphData.links.forEach((l) => {
+    degree.set(l.source, (degree.get(l.source) || 0) + 1)
+    degree.set(l.target, (degree.get(l.target) || 0) + 1)
+  })
+  let goodsName = null
+  let goodsDeg = -1
+  let anyName = null
+  let anyDeg = -1
+  graphData.nodes.forEach((n) => {
+    const d = degree.get(n.id) || 0
+    const nm = n.name || ''
+    if (nm.includes('货物') && d > goodsDeg) {
+      goodsDeg = d
+      goodsName = nm
+    }
+    if (d > anyDeg) {
+      anyDeg = d
+      anyName = nm
+    }
+  })
+  const targetName = goodsName || anyName
+  if (!targetName) return null
+  const seriesModel = myChart.getModel().getSeriesByIndex(0)
+  const data = seriesModel && seriesModel.getData()
+  if (!data || data.count() === 0) return null
+  let res = null
+  data.each((idx) => {
+    if (res) return
+    if (data.getName(idx) === targetName) {
+      const pos = data.getItemLayout(idx)
+      if (pos && Number.isFinite(pos[0]) && Number.isFinite(pos[1])) {
+        res = [pos[0], pos[1]]
+      }
+    }
+  })
+  return res
+}
+
+/**
+ * 聚焦视图：以最核心的枢纽节点（优先「货物」）为画面中心、1:1 缩放，
+ * 让用户一进页面就看到中心区域；取不到枢纽时退化为初始自然视角。
+ */
+const focusView = () => {
+  if (!myChart) return
+  const center = focusCenter()
+  myChart.setOption({ series: [{ center: center || null, zoom: 1 }] })
+}
+
 // 渲染图表
 const renderChart = () => {
   if (!myChart) return
   const limited = applyNodeLimit(graphData.nodes, graphData.links, nodeLimit.value)
-  // 默认「聚焦视图」：不自动 fitView，保留力导向布局的自然视角，让用户
-  // 直接看到枢纽节点区域的细节；想看整体可点上方「全局视角」一键切换。
+  // 默认「聚焦视图」：不自动 fitView（那是全局态），而是把视图中心对准
+  // 最核心的枢纽节点「货物」，让用户一进页面就看到中心区域。
   myChart.setOption({
     series: [{
       data: limited.nodes,
@@ -992,6 +1047,14 @@ const renderChart = () => {
     }]
   })
   viewMode.value = 'focus'
+  // 力导向布局一次性算完（layoutAnimation:false），首个 finished 帧坐标才确定，
+  // 此时才能拿到「货物」节点的布局坐标来居中，故延迟到 finished 再执行。
+  const focusOnce = () => {
+    myChart.off('finished', focusOnce)
+    focusView()
+  }
+  myChart.off('finished', focusOnce)
+  myChart.on('finished', focusOnce)
 }
 
 /**
@@ -2922,12 +2985,6 @@ const highlightAssociations = (nodeIds, associations) => {
 }
 
 // 重置视图
-/** 聚焦视图 = 初始自然视角（zoom=1、不设 center）。 */
-const focusView = () => {
-  if (!myChart) return
-  myChart.setOption({ series: [{ center: null, zoom: 1 }] })
-}
-
 /** 在「聚焦视图」与「全局视角」之间一键切换。 */
 const toggleView = () => {
   if (!myChart) return
